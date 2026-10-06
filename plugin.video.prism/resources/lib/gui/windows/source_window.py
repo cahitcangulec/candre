@@ -5,6 +5,7 @@ import xbmcgui
 from . import set_info_properties
 from resources.lib.common import tools
 from resources.lib.gui.windows.base_window import BaseWindow
+from resources.lib.modules.globals import g
 
 
 class SourceWindow(BaseWindow):
@@ -45,6 +46,11 @@ class SourceWindow(BaseWindow):
                     menu_item.setProperty(info, str(value).replace("_", " "))
                 except UnicodeEncodeError:
                     menu_item.setProperty(info, i[info])
+
+            if i.get("unverified"):
+                # Cache status unknown (checked by the resolver on play): mark it next to the debrid tag.
+                debrid_provider = str(i.get("debrid_provider", "")).replace("_", " ")
+                menu_item.setProperty("debrid_provider", f"{debrid_provider} ({g.get_language_string(31129)})")
 
             set_info_properties(i.get("info", {}), menu_item)
             self.display_list.addItem(menu_item)

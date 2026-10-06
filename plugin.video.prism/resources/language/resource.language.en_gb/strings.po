@@ -5820,3 +5820,8 @@ msgstr "Show a global My Watch History folder on the Prism home menu. Hidden whe
 msgctxt "#31128"
 msgid "Nothing to continue watching right now"
 msgstr "Nothing to continue watching right now"
+
+#: /resources/lib/gui/windows/source_window.py
+msgctxt "#31129"
+msgid "Unverified"
+msgstr "Unverified"

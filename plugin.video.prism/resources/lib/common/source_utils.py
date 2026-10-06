@@ -27,6 +27,8 @@ _WHITESPACE = re.compile(r'\s+')
 _SINGLE_QUOTE = re.compile(r"['`]")
 _AMPERSAND = re.compile(r'&#038;|&amp;|&')
 _EPISODE_NUMBERS = re.compile(r'.*((?:s\d+ ?e\d+ )|(?:season ?\d+ ?(?:episode|ep) ?\d+)|(?: \d+ ?x ?\d+ ))')
+# Cleaned title of a single video file ("... s01 05 mkv"), as opposed to a torrent / folder name.
+_VIDEO_FILE_TITLE = re.compile(r' (?:mkv|mp4|avi|m4v|mov|wmv|webm|m2ts|ts|mpg|mpeg|flv)$')
 _ASCII_NON_PRINTABLE = re.compile(fr'[^{re.escape(string.printable)}]')
 
 
@@ -851,23 +853,18 @@ def get_filter_season_pack_fn(simple_info):
     titles = list(alias_list)
     titles.insert(0, show_title)
 
-    season_fill = season.zfill(2)
-    season_check = f"s{season}"
-    season_fill_check = f"s%{season_fill}"
-    season_full_check = f"season {season}"
-    season_full_fill_check = f"season {season_fill}"
-
     clean_titles = []
     for title in titles:
         clean_titles.append(clean_title_with_simple_info(title, simple_info))
 
-    suffixes = [
-        season_check,
-        season_fill_check,
-        season_full_check,
-        season_full_fill_check,
-    ]
-    regex_pattern = _get_regex_pattern(clean_titles, suffixes)
+    # "s1", "s01", "season 1", "season 01", "season01", optionally after the show year
+    # ("show 2019 s01"); the number must end there, so season 1 does not match "s10" / "s011".
+    # (The Seren-era f"s%{season_fill}" never matched anything, so "show s01" packs were dropped.)
+    season_number = re.escape(str(season).lstrip("0") or "0")
+    year = str(simple_info.get("year") or "")
+    year_prefix = f"(?:{re.escape(year)} )?" if year else ""
+    season_suffix = f"{year_prefix}(?:s|season ?)0*{season_number}(?![a-z0-9])"
+    regex_pattern = _get_regex_pattern(clean_titles, [], non_escaped_suffixes=[season_suffix])
 
     def filter_fn(release_title):
         """
@@ -877,6 +874,11 @@ def get_filter_season_pack_fn(simple_info):
         """
         episode_number_match = check_episode_number_match(release_title)
         if episode_number_match:
+            return False
+
+        # Only a torrent / folder can be a season pack. A file that matches nothing but the
+        # season ("show s01 05 mkv") is not the requested episode: the episode matchers decide.
+        if _VIDEO_FILE_TITLE.search(release_title):
             return False
 
         return bool(re.match(regex_pattern, release_title))

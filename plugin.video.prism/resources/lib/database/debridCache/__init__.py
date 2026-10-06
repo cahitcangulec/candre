@@ -104,3 +104,20 @@ class DebridCache(Database):
             g.log("DebridCache: Cleared all entries", "info")
         except Exception as exc:
             g.log(f"DebridCache.clear_all error: {exc}", "warning")
+
+    def clear_uncached_entries(self):
+        """
+        Drop the negative ("uncached") rows. They block rechecks for CACHE_TTL_HOURS_UNCACHED,
+        so negatives written by a broken cache check must not outlive the version that wrote them.
+        Runs regardless of general.torrentCache: rows may predate the setting being disabled.
+        :return: number of rows removed, or None on error
+        """
+        try:
+            row = self.fetchone("SELECT COUNT(*) AS cnt FROM debrid_data WHERE cached = 'False'")
+            count = row["cnt"] if row else 0
+            self.execute_sql("DELETE FROM debrid_data WHERE cached = 'False'")
+            g.log(f"DebridCache: Cleared {count} uncached entries", "info")
+            return count
+        except Exception as exc:
+            g.log(f"DebridCache.clear_uncached_entries error: {exc}", "warning")
+            return None

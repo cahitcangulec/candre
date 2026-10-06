@@ -15,11 +15,120 @@
       "root_cause": "TorrentCacheCheck only ran the external RD cache lookup (DMM/Torrentio/Comet/AIOStreams) when an IMDb id was present; anime from Simkl often has none, so nothing was checked and every hash was written as uncached for 4 h. Cloud: anime names like '[Group] Show - 05' and batch torrents '(01-28)' never matched the SxxEyy/unpadded matchers.",
       "fix": "Kitsu-id contexts (kitsu:<id> via MAL/AniList mapping) for Torrentio/Comet/AIOStreams; Seren-style unverified RD fallback for anime with no ids; anime zero-padded episode matcher; anime batch handling in the RD cloud scraper (commit ce0d509, release 5.0.57)",
       "tags": ["anime", "real-debrid", "cache-check", "imdb", "kitsu", "cloud", "source-matching"],
-      "related_bugs": [],
+      "related_bugs": ["bug-002", "bug-003"],
       "occurrences": 1,
       "last_seen": "2026-10-06T20:03:35.000Z",
-      "status": "fixed in 5.0.57, not yet confirmed inside Kodi",
+      "status": "fixed in 5.0.57, not yet confirmed inside Kodi; did not fix the user's Lord of Mysteries report (different cause: bug-002, bug-003)",
       "details": "docs/anime-rd-cache-investigation.md"
+    },
+    {
+      "id": "bug-002",
+      "timestamp": "2026-10-06T21:30:00.000Z",
+      "error_message": "Every Real-Debrid torrent for 'Lord of Mysteries' S01E01 shown as uncached in 5.0.57 (Seren 3.0.62 shows many cached); DMM availability check returns 403 {\"errorMessage\":\"Authentication error\"} for every IMDb id",
+      "file": "plugin.video.prism/resources/lib/debrid/external_cache.py",
+      "files": [
+        "plugin.video.prism/resources/lib/debrid/external_cache.py"
+      ],
+      "root_cause": "_dmm_get_secret signed the DMM availability token client-side with a hard-coded salt. DMM moved token signing server-side on 2026-08-31 (GET /api/challenge -> {token, hash}), so every DMM call (RD and AD) returned 403. The error was swallowed as an empty set, silently removing the only per-hash cache checker for all movies, TV and anime; mainstream titles were masked by the Torrentio/Comet/AIOStreams crowd caches. Only the first 100 hashes were ever sent.",
+      "fix": "_dmm_get_challenge fetches the token from /api/challenge (shared across threads under a lock, reused 110 s, one forced refetch on 403 in _dmm_post_chunk, 30 s back-off after a failed challenge); hashes sent in chunks of 100; dead client-side signing helpers removed (release 5.0.58)",
+      "tags": ["real-debrid", "all-debrid", "dmm", "cache-check", "auth", "403", "external-api"],
+      "related_bugs": ["bug-001", "bug-003"],
+      "occurrences": 1,
+      "last_seen": "2026-10-06T21:30:00.000Z",
+      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "details": "docs/rd-cache-dmm-fix.md"
+    },
+    {
+      "id": "bug-003",
+      "timestamp": "2026-10-06T21:30:00.000Z",
+      "error_message": "Hashes whose cache check failed or got no answer were stored as uncached ('False') in debridCache for 4 h and not rechecked; the unverified fallback never applied to items with an IMDb or Kitsu id",
+      "file": "plugin.video.prism/resources/lib/modules/getSources.py",
+      "files": [
+        "plugin.video.prism/resources/lib/modules/getSources.py",
+        "plugin.video.prism/resources/lib/debrid/external_cache.py",
+        "plugin.video.prism/resources/lib/database/debridCache/__init__.py",
+        "plugin.video.prism/resources/lib/modules/prism_version.py",
+        "plugin.video.prism/resources/lib/modules/source_sorter.py",
+        "plugin.video.prism/resources/lib/gui/windows/source_window.py",
+        "plugin.video.prism/resources/language/resource.language.en_gb/strings.po"
+      ],
+      "root_cause": "Every external checker returned set() on exception and _run_parallel_checks counted that as a completed check, so 'failed' looked like 'none cached'. _realdebrid_worker / _all_debrid_worker then wrote every unconfirmed hash as 'False' (even when success was False). The ce0d509 unverified fallback only fired for anime with neither IMDb nor Kitsu id. Negatives written by older versions also blocked rechecks, and _split_by_db_cache compared hashes case-sensitively.",
+      "fix": "Checkers return None for no answer and set() only for a real answer; check_rd_external / check_ad_external return (cached, success, dmm_checked); _write_cache_results(checked_hashes=dmm_checked) persists 'False' only for hashes DMM answered for; _offer_unanswered_rd_torrents offers the rest as unverified=True (label 'REAL DEBRID (UNVERIFIED)', string #31129, sorted last by source_sorter._get_cache_confidence_key); DebridCache.clear_uncached_entries runs on every version change; hashes compared lower-case; scraper debrid RD/AD markers honoured (release 5.0.58)",
+      "tags": ["real-debrid", "all-debrid", "cache-check", "debridCache", "persistence", "error-handling", "unverified", "sorting"],
+      "related_bugs": ["bug-001", "bug-002"],
+      "occurrences": 1,
+      "last_seen": "2026-10-06T21:30:00.000Z",
+      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "details": "docs/rd-cache-dmm-fix.md"
+    },
+    {
+      "id": "bug-004",
+      "timestamp": "2026-10-06T21:30:00.000Z",
+      "error_message": "Comet RD check returned no hashes: the first Comet base answered HTTP 200 with only an 'Invalid API key' error stream and the remaining bases were never tried",
+      "file": "plugin.video.prism/resources/lib/debrid/external_cache.py",
+      "files": [
+        "plugin.video.prism/resources/lib/debrid/external_cache.py"
+      ],
+      "root_cause": "comet_check_cache left the base loop on the first 2xx response. Comet reports problems such as an invalid debrid key as a 200 with a single '[X] realdebrid' error stream, so the error looked like 'nothing cached' and the other bases were skipped.",
+      "fix": "_is_comet_error_stream filters error streams; an error-only answer is logged and the next base is tried; no real answer from any base returns None (no answer) instead of set() (release 5.0.58)",
+      "tags": ["comet", "real-debrid", "cache-check", "external-api", "error-handling"],
+      "related_bugs": ["bug-003"],
+      "occurrences": 1,
+      "last_seen": "2026-10-06T21:30:00.000Z",
+      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "details": "docs/rd-cache-dmm-fix.md"
+    },
+    {
+      "id": "bug-005",
+      "timestamp": "2026-10-06T21:30:00.000Z",
+      "error_message": "TV season packs named like 'Show.S01.1080p' never matched at torrent level in the cloud scrapers (pre-existing, inherited from Seren)",
+      "file": "plugin.video.prism/resources/lib/common/source_utils.py",
+      "files": [
+        "plugin.video.prism/resources/lib/common/source_utils.py"
+      ],
+      "root_cause": "get_filter_season_pack_fn built the suffix f\"s%{season_fill}\" with a literal '%', which can never match, so only 's1' / 'season 1' forms were recognised.",
+      "fix": "Season suffix regex (?:s|season ?)0*N(?![a-z0-9]) with an optional show-year prefix, so season 1 no longer matches s10 / s011; video-file titles are never treated as season packs (release 5.0.58; 41/41 offline cases)",
+      "tags": ["source-matching", "season-pack", "cloud", "regex", "seren-inherited"],
+      "related_bugs": ["bug-001"],
+      "occurrences": 1,
+      "last_seen": "2026-10-06T21:30:00.000Z",
+      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "details": "docs/rd-cache-dmm-fix.md"
+    },
+    {
+      "id": "bug-006",
+      "timestamp": "2026-10-06T21:30:00.000Z",
+      "error_message": "AIOStreams cache check against aiostreams.vortetos.com fails with NameResolutionError on every call",
+      "file": "plugin.video.prism/resources/lib/debrid/external_cache.py",
+      "files": [
+        "plugin.video.prism/resources/lib/debrid/external_cache.py"
+      ],
+      "root_cause": "The public AIOStreams instance aiostreams.vortetos.com no longer resolves in DNS (checked live 2026-10-06) but was still in the AIOStreams URL list.",
+      "fix": "Removed the URL from the AIOStreams instance list (release 5.0.58)",
+      "tags": ["aiostreams", "dead-url", "external-api", "cache-check"],
+      "related_bugs": ["bug-003"],
+      "occurrences": 1,
+      "last_seen": "2026-10-06T21:30:00.000Z",
+      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "details": "docs/rd-cache-dmm-fix.md"
+    },
+    {
+      "id": "bug-007",
+      "timestamp": "2026-10-06T23:00:00.000Z",
+      "error_message": "Review follow-up: with DMM down, unverified RD torrents counted as cached for pre-emptive termination and could stop the scrape after the first provider batch",
+      "file": "plugin.video.prism/resources/lib/modules/getSources.py",
+      "files": [
+        "plugin.video.prism/resources/lib/modules/getSources.py",
+        "plugin.video.prism/resources/lib/common/source_utils.py"
+      ],
+      "root_cause": "_prem_terminate used statistics.filtered.torrentsCached, which counts every torrentCacheSources entry including unverified=True fallbacks (pre-emptive termination is on by default, limit 5).",
+      "fix": "New statistics.filtered.torrentsCachedVerified (filtered cached torrents minus unverified ones) used by _prem_terminate types 0 and 2; torrentsCached is unchanged for the window and _is_playable_source. Also added 'ts' to source_utils._VIDEO_FILE_TITLE (release 5.0.58)",
+      "tags": ["pre-emptive-termination", "unverified", "dmm", "real-debrid", "review"],
+      "related_bugs": ["bug-002", "bug-003", "bug-005"],
+      "occurrences": 1,
+      "last_seen": "2026-10-06T23:00:00.000Z",
+      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "details": "docs/rd-cache-dmm-fix.md"
     }
   ]
 }

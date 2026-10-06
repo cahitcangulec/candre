@@ -9,6 +9,7 @@ def do_version_change():
 
     g.log("Clearing cache on Prism version change", "info")
     g.clear_cache(silent=True)
+    _clear_uncached_debrid_hashes()
 
     g.set_setting("prism.version", g.CLEAN_VERSION)
 
@@ -22,3 +23,17 @@ def do_version_change():
     g.set_setting(
         "reuselanguageinvoker.status", "Disabled"
     )  # This ensures setting is reflected as disabled on version change
+
+
+def _clear_uncached_debrid_hashes():
+    """
+    Hashes stored as uncached are not rechecked for 4 h. A release may fix a cache check that
+    wrote wrong negatives (5.0.57: broken DMM check), so drop them on every version change.
+    """
+    try:
+        g.log("Clearing uncached debrid hashes on Prism version change", "info")
+        from resources.lib.database.debridCache import DebridCache
+
+        DebridCache().clear_uncached_entries()
+    except Exception:
+        g.log_stacktrace()

@@ -327,7 +327,24 @@ class SourceSorter:
         return sorted(sources_list, key=self._get_sort_key_tuple, reverse=True)
 
     def _get_sort_key_tuple(self, source):
-        return tuple(-sm(source) if reverse else sm(source) for (sm, reverse) in self.sort_methods if sm)
+        return (self._get_cache_confidence_key(source),) + tuple(
+            -sm(source) if reverse else sm(source) for (sm, reverse) in self.sort_methods if sm
+        )
+
+    @staticmethod
+    def _get_cache_confidence_key(source):
+        """
+        Leading sort key, ahead of the user's sort methods (descending sort):
+        2 = playable as far as we know (verified cached torrents, cloud, hosters, direct, adaptive),
+        1 = debrid torrent offered unverified (cache status unknown, checked by the resolver on play),
+        0 = plain uncached torrent (no debrid provider, e.g. the manual caching list).
+        The user's sort methods still order the sources within each group.
+        """
+        if source.get("unverified"):
+            return 1
+        if source.get("type") == "torrent" and not source.get("debrid_provider"):
+            return 0
+        return 2
 
     def _get_type_sort_key(self, source):
         return self.type_priorities.get(source.get("type"), -99)
@@ -360,7 +377,11 @@ class SourceSorter:
         self.last_release_name = self._load_last_release_name()
         if not self.last_release_name:
             return sources_list
-        return sorted(sources_list, key=self._get_last_release_name_sort_key, reverse=True)
+        return sorted(
+            sources_list,
+            key=lambda s: (self._get_cache_confidence_key(s), self._get_last_release_name_sort_key(s)),
+            reverse=True,
+        )
 
     def _get_last_release_name_sort_key(self, source):
         sm = SequenceMatcher(None, self.last_release_name, source['release_title'], autojunk=False)
