@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="repository.candre" name="Candre Repository" version="1.0.0" provider-name="cahitcangulec">
+    <extension point="xbmc.addon.repository" name="Candre Repository">
+        <dir>
+            <info compressed="false">https://cahitcangulec.github.io/candre/addons.xml</info>
+            <checksum>https://cahitcangulec.github.io/candre/addons.xml.md5</checksum>
+            <datadir zip="true">https://cahitcangulec.github.io/candre/zips/</datadir>
+        </dir>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+        <summary>Candre Repository</summary>
+        <description>Repository for the candre fork of Prism (plugin.video.prism and context.prism).</description>
+        <disclaimer></disclaimer>
+        <platform>all</platform>
+        <assets>
+            <icon>icon.png</icon>
+            <fanart>fanart.png</fanart>
+        </assets>
+    </extension>
+</addon>
