@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "bugs": [
+    {
+      "id": "bug-001",
+      "timestamp": "2026-10-06T20:03:35.000Z",
+      "error_message": "Anime episodes show 0 cached and 0 cloud Real-Debrid sources (movies/TV fine; Seren shows 20-40 cached)",
+      "file": "plugin.video.prism/resources/lib/modules/getSources.py",
+      "files": [
+        "plugin.video.prism/resources/lib/modules/getSources.py",
+        "plugin.video.prism/resources/lib/debrid/external_cache.py",
+        "plugin.video.prism/resources/lib/common/source_utils.py",
+        "plugin.video.prism/resources/lib/modules/cloud_scrapers.py"
+      ],
+      "root_cause": "TorrentCacheCheck only ran the external RD cache lookup (DMM/Torrentio/Comet/AIOStreams) when an IMDb id was present; anime from Simkl often has none, so nothing was checked and every hash was written as uncached for 4 h. Cloud: anime names like '[Group] Show - 05' and batch torrents '(01-28)' never matched the SxxEyy/unpadded matchers.",
+      "fix": "Kitsu-id contexts (kitsu:<id> via MAL/AniList mapping) for Torrentio/Comet/AIOStreams; Seren-style unverified RD fallback for anime with no ids; anime zero-padded episode matcher; anime batch handling in the RD cloud scraper (commit ce0d509, release 5.0.57)",
+      "tags": ["anime", "real-debrid", "cache-check", "imdb", "kitsu", "cloud", "source-matching"],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-10-06T20:03:35.000Z",
+      "status": "fixed in 5.0.57, not yet confirmed inside Kodi",
+      "details": "docs/anime-rd-cache-investigation.md"
+    }
+  ]
+}

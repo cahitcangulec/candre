@@ -8,3 +8,30 @@ __pycache__/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# OpenWolf: per-machine runtime state, caches and token stats.
+# The shared brain (STATUS.md, cerebrum.md, buglog.json, identity.md, config.json,
+# cron-manifest.json, OPENWOLF.md, hooks/*.js) is committed; regenerate the index with `openwolf scan`.
+/.wolf/anatomy.md
+/.wolf/anatomy-index.json
+/.wolf/_scan-state.json
+/.wolf/memory.md
+/.wolf/token-ledger.json
+/.wolf/cron-state.json
+/.wolf/suggestions.json
+/.wolf/daemon.log
+/.wolf/dashboard-token
+/.wolf/backups/
+/.wolf/history/
+/.wolf/*.lock
+/.wolf/*.tmp
+/.wolf/hooks/_*.json
+/.wolf/hooks/codex/
+
+# Codex hook wiring: OpenWolf writes absolute machine paths into it.
+# Recreate with `openwolf init --agent claude codex`.
+/.codex/hooks.json
+
+# Claude Code per-user settings and subagent worktrees
+/.claude/settings.local.json
+/.claude/worktrees/
