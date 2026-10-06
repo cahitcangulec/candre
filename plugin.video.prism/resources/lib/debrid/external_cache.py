@@ -6,10 +6,14 @@ AD: DMM /availability/ad/check + Torrentio + AIOStreams + Comet (service-scoped)
 
 Hash results are unioned per debrid. Callers match any scraped torrent hash
 (nyaa, torrentio, etc.) against the confirmed set.
+
+Anime episodes may also be looked up by Kitsu id (``kitsu:<id>:<episode>``), which
+Torrentio/Comet/AIOStreams use for anime; DMM is IMDb-only.
 """
 from __future__ import annotations
 
 import base64
+import datetime
 import json
 import random
 import re
@@ -105,6 +109,17 @@ _COMET_BASES = [
 _COMET_SERVICE_MAP = {"ad": "alldebrid", "rd": "realdebrid"}
 _DIRECT_TIMEOUT = 10
 
+_KITSU_MAPPING_URLS = (
+    "https://kitsu.app/api/edge/mappings",
+    "https://kitsu.io/api/edge/mappings",
+)
+_KITSU_TIMEOUT = 3
+# Upper bound (seconds) for one resolve_kitsu_id() call, all hosts and ids included.
+KITSU_LOOKUP_BUDGET = 5
+_KITSU_CACHE_HOURS = 168
+_KITSU_NEGATIVE_CACHE_HOURS = 24
+_KITSU_PREFIX = "kitsu:"
+
 
 def _get_session():
     global _session
@@ -117,6 +132,24 @@ def _get_session():
             "Accept": "application/json",
         })
     return _session
+
+
+def _stremio_stream_id(media_id, season, episode):
+    """
+    Return (type, id) for a Stremio stream request.
+
+    IMDb ids keep the ``tt...:season:episode`` / ``tt...`` shape. Anime may pass a
+    ``kitsu:<id>`` media id, which is addressed as ``kitsu:<id>:<episode>`` (Kitsu
+    numbers episodes per entry, there is no season component).
+    """
+    media_id = str(media_id)
+    if media_id.startswith(_KITSU_PREFIX):
+        if episode is not None and str(episode).isdigit():
+            return "series", f"{media_id}:{episode}"
+        return "movie", media_id
+    if season is not None and str(season).isdigit():
+        return "series", f"{media_id}:{season}:{episode}"
+    return "movie", media_id
 
 
 def _extract_hashes_from_streams(streams):
@@ -148,10 +181,8 @@ def torrentio_check_cache(imdb, season, episode, service="rd", debrid_key=None):
     if not imdb:
         return set()
 
-    if season is not None and str(season).isdigit():
-        path = f"series/{imdb}:{season}:{episode}.json"
-    else:
-        path = f"movie/{imdb}.json"
+    stream_type, stream_id = _stremio_stream_id(imdb, season, episode)
+    path = f"{stream_type}/{stream_id}.json"
 
     debrid_param = _get_torrentio_debrid_param(service, debrid_key)
     if not debrid_param:
@@ -290,10 +321,8 @@ def aio_check_cache(imdb, season, episode, service="ad", api_key=None):
     if not imdb:
         return set()
 
-    if season is not None and str(season).isdigit():
-        params = {"type": "series", "id": f"{imdb}:{season}:{episode}"}
-    else:
-        params = {"type": "movie", "id": str(imdb)}
+    stream_type, stream_id = _stremio_stream_id(imdb, season, episode)
+    params = {"type": stream_type, "id": stream_id}
 
     user_data = _build_aio_user_data(service, api_key)
     if not user_data:
@@ -353,10 +382,8 @@ def comet_check_cache(imdb, season, episode, api_key=None, service="ad"):
     if not key:
         return set()
 
-    if season is not None and str(season).isdigit():
-        path = f"stream/series/{imdb}:{season}:{episode}.json"
-    else:
-        path = f"stream/movie/{imdb}.json"
+    stream_type, stream_id = _stremio_stream_id(imdb, season, episode)
+    path = f"stream/{stream_type}/{stream_id}.json"
 
     config = _build_comet_config(key, svc)
     hashes = set()
@@ -413,15 +440,35 @@ def _run_parallel_checks(futures_map, label, timeout=12):
     return all_cached, False
 
 
-def check_rd_external(hash_list, imdb, season, episode):
-    rd_token = g.get_setting("rd.auth")
-    futures_map = {
-        "dmm": lambda: dmm_check_cache_rd(hash_list, imdb),
-        "torrentio": lambda: torrentio_check_cache(imdb, season, episode, "rd", rd_token),
-        "comet": lambda: comet_check_cache(imdb, season, episode, rd_token, "rd"),
-    }
+def _rd_check_futures(hash_list, imdb, season, episode, rd_token, label=""):
+    futures_map = {}
+    if not str(imdb).startswith(_KITSU_PREFIX):
+        futures_map[f"dmm{label}"] = lambda: dmm_check_cache_rd(hash_list, imdb)
+    futures_map[f"torrentio{label}"] = lambda: torrentio_check_cache(imdb, season, episode, "rd", rd_token)
+    futures_map[f"comet{label}"] = lambda: comet_check_cache(imdb, season, episode, rd_token, "rd")
     if rd_token:
-        futures_map["aiostreams"] = lambda: aio_check_cache(imdb, season, episode, "rd", rd_token)
+        futures_map[f"aiostreams{label}"] = lambda: aio_check_cache(imdb, season, episode, "rd", rd_token)
+    return futures_map
+
+
+def _extra_context_futures(build_futures, hash_list, extra_contexts, key):
+    futures_map = {}
+    for media_id, season, episode in extra_contexts or ():
+        if media_id:
+            futures_map.update(build_futures(hash_list, media_id, season, episode, key, f" ({media_id})"))
+    return futures_map
+
+
+def check_rd_external(hash_list, imdb, season, episode, extra_contexts=None):
+    """
+    :param extra_contexts: optional extra (media_id, season, episode) lookups unioned with
+        the IMDb one, e.g. ``("kitsu:46474", None, "5")`` for anime episodes.
+    """
+    rd_token = g.get_setting("rd.auth")
+    futures_map = _rd_check_futures(hash_list, imdb, season, episode, rd_token) if imdb else {}
+    futures_map.update(_extra_context_futures(_rd_check_futures, hash_list, extra_contexts, rd_token))
+    if not futures_map:
+        return set(), False
     cached, success = _run_parallel_checks(futures_map, "RD")
     g.log(f"ExternalCache RD: {len(cached)} total cached hashes", "info")
     return cached, success
@@ -449,14 +496,100 @@ def prime_ad_cache_checker_devices():
     g.log("ExternalCache AD: primed cache checker device approval requests", "info")
 
 
-def check_ad_external(hash_list, imdb, season, episode):
+def _ad_check_futures(hash_list, imdb, season, episode, ad_key, label=""):
+    futures_map = {}
+    if not str(imdb).startswith(_KITSU_PREFIX):
+        futures_map[f"dmm{label}"] = lambda: dmm_check_cache_ad(hash_list, imdb)
+    futures_map[f"torrentio{label}"] = lambda: torrentio_check_cache(imdb, season, episode, "ad", ad_key)
+    futures_map[f"aiostreams{label}"] = lambda: aio_check_cache(imdb, season, episode, "ad", ad_key)
+    futures_map[f"comet{label}"] = lambda: comet_check_cache(imdb, season, episode, ad_key or None, "ad")
+    return futures_map
+
+
+def check_ad_external(hash_list, imdb, season, episode, extra_contexts=None):
+    """
+    :param extra_contexts: optional extra (media_id, season, episode) lookups unioned with
+        the IMDb one, e.g. ``("kitsu:46474", None, "5")`` for anime episodes.
+    """
     ad_key = g.get_setting("alldebrid.apikey")
-    futures_map = {
-        "dmm": lambda: dmm_check_cache_ad(hash_list, imdb),
-        "torrentio": lambda: torrentio_check_cache(imdb, season, episode, "ad", ad_key),
-        "aiostreams": lambda: aio_check_cache(imdb, season, episode, "ad", ad_key),
-        "comet": lambda: comet_check_cache(imdb, season, episode, ad_key or None, "ad"),
-    }
+    futures_map = _ad_check_futures(hash_list, imdb, season, episode, ad_key) if imdb else {}
+    futures_map.update(_extra_context_futures(_ad_check_futures, hash_list, extra_contexts, ad_key))
+    if not futures_map:
+        return set(), False
     cached, success = _run_parallel_checks(futures_map, "AD", timeout=30)
     g.log(f"ExternalCache AD: {len(cached)} total cached hashes", "info")
     return cached, success
+
+
+def _kitsu_mapping_lookup(external_site, external_id, deadline):
+    """
+    Kitsu anime id for an external (MAL / AniList) anime id, or "" when Kitsu has no mapping.
+    One plain request per host (no retry adapter), each bounded by ``deadline``
+    (time.monotonic()). Raises when no host answered.
+    """
+    params = {
+        "filter[externalSite]": external_site,
+        "filter[externalId]": str(external_id),
+        "include": "item",
+        "fields[anime]": "slug",
+    }
+    headers = {"User-Agent": random.choice(_BROWSER_UAS), "Accept": "application/vnd.api+json"}
+    last_exc = TimeoutError("Kitsu lookup time budget exhausted")
+    for url in _KITSU_MAPPING_URLS:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.5:
+            break
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=min(_KITSU_TIMEOUT, remaining))
+            resp.raise_for_status()
+            for mapping in resp.json().get("data", []):
+                item = ((mapping.get("relationships") or {}).get("item") or {}).get("data") or {}
+                if item.get("type") == "anime" and str(item.get("id", "")).isdigit():
+                    return str(item["id"])
+            return ""
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc
+
+
+def _kitsu_cache_get(cache_key):
+    try:
+        from resources.lib.database.cache import CacheBase
+
+        value = g.CACHE.get(cache_key)
+        return None if value == CacheBase.NOT_CACHED else value
+    except Exception:
+        return None
+
+
+def _kitsu_cache_set(cache_key, kitsu_id):
+    # "No mapping" is cached for a day only: airing shows often get their Kitsu mapping later.
+    hours = _KITSU_CACHE_HOURS if kitsu_id else _KITSU_NEGATIVE_CACHE_HOURS
+    try:
+        g.CACHE.set(cache_key, kitsu_id, expiration=datetime.timedelta(hours=hours))
+    except Exception:
+        pass
+
+
+def resolve_kitsu_id(mal_id=None, anilist_id=None):
+    """
+    Map MAL / AniList anime ids to a Kitsu id. Torrentio and Comet address anime by
+    ``kitsu:<id>`` when there is no (or no matching) IMDb id. Returns None when unknown or
+    when Kitsu did not answer within KITSU_LOOKUP_BUDGET seconds (failures are not cached).
+    """
+    deadline = time.monotonic() + KITSU_LOOKUP_BUDGET
+    for external_site, external_id in (("myanimelist/anime", mal_id), ("anilist/anime", anilist_id)):
+        if external_id in (None, "", 0):
+            continue
+        cache_key = f"external_cache.kitsu_mapping.{external_site}.{external_id}"
+        kitsu_id = _kitsu_cache_get(cache_key)
+        if kitsu_id is None:
+            try:
+                kitsu_id = _kitsu_mapping_lookup(external_site, str(external_id), deadline)
+            except Exception as exc:
+                g.log(f"ExternalCache: Kitsu mapping lookup failed ({external_site} {external_id}): {exc}", "warning")
+                return None
+            _kitsu_cache_set(cache_key, kitsu_id)
+        if kitsu_id:
+            return kitsu_id
+    return None

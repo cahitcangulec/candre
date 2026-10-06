@@ -8,6 +8,7 @@ import json
 import random
 import re
 import sys
+import threading
 import time
 from collections import Counter
 from collections import OrderedDict
@@ -20,6 +21,7 @@ import xbmcgui
 from resources.lib.common import source_utils
 from resources.lib.common import tools
 from resources.lib.common.thread_pool import ThreadPool
+from resources.lib.common.thread_pool import prism_plugin_no_threads
 from resources.lib.database.skinManager import SkinManager
 from resources.lib.database.torrentCache import TorrentCache
 from resources.lib.debrid import all_debrid
@@ -143,6 +145,7 @@ class Sources:
 
             self._handle_pre_scrape_modifiers()
             self._get_imdb_info()
+            self._start_anime_kitsu_lookup()
 
             if overwrite_torrent_cache:
                 self._clear_local_torrent_results()
@@ -367,6 +370,14 @@ class Sources:
         except requests.exceptions.ConnectionError as ce:
             g.log("Unable to obtain IMDB suggestions to confirm movie year", "warning")
             g.log(ce, "debug")
+
+    def _start_anime_kitsu_lookup(self):
+        """Anime episodes only: resolve the Kitsu cache-check id in the background while scraping."""
+        try:
+            if TorrentCacheCheck._is_anime_episode(self.item_information):
+                AnimeKitsuLookup.for_scrape(self, self.item_information)
+        except Exception:
+            g.log_stacktrace()
 
     @staticmethod
     def _imdb_suggestions(imdb_id):
@@ -1258,6 +1269,29 @@ class TorrentCacheCheck:
         episode = item_info.get("alternative_episode") or item_info.get("episode")
         return imdb, season, episode
 
+    @staticmethod
+    def _is_anime_episode(info):
+        item = info or {}
+        item_info = item.get("info") or {}
+        if item_info.get("mediatype") != g.MEDIA_EPISODE:
+            return False
+        from resources.lib.simkl.anime_scraper_context import is_anime_item
+
+        return is_anime_item(item_info, item)
+
+    def _external_lookup(self, info):
+        """
+        External cache lookup coordinates: (imdb, season, episode, extra_contexts).
+        Movies/TV: the IMDb context only, extra_contexts is always empty.
+        Anime episodes: plus the Kitsu context when available. The IMDb lookup is never
+        delayed for Kitsu; only an anime episode without IMDb waits (bounded) for it.
+        """
+        imdb, season, episode = self._external_imdb_context(info)
+        if not self._is_anime_episode(info):
+            return imdb, season, episode, []
+        kitsu_context = AnimeKitsuLookup.for_scrape(self.scraper_class, info).get(wait=not imdb)
+        return imdb, season, episode, [kitsu_context] if kitsu_context else []
+
     def _init_db_cache_rows(self, torrent_list):
         hash_list = [torrent["hash"] for torrent in torrent_list if torrent.get("hash")]
         self._db_cached_rows = []
@@ -1385,15 +1419,23 @@ class TorrentCacheCheck:
                 if torrent.get("hash", "").lower() not in confirmed:
                     needs_check.append(torrent)
 
+            not_checked = set()
             if needs_check:
-                imdb, season, episode = self._external_imdb_context(info)
-                if imdb:
+                imdb, season, episode, extra_contexts = self._external_lookup(info)
+                if imdb or extra_contexts:
                     hash_list = [torrent["hash"].lower() for torrent in needs_check]
-                    ext_cached, success = external_cache.check_ad_external(hash_list, imdb, season, episode)
+                    ext_cached, success = external_cache.check_ad_external(
+                        hash_list, imdb, season, episode, extra_contexts=extra_contexts
+                    )
                     if success is not False:
                         confirmed |= self._mark_confirmed_torrents(needs_check, ext_cached, "all_debrid")
+                elif self._is_anime_episode(info):
+                    not_checked = {torrent.get("hash", "").lower() for torrent in needs_check}
 
-            self._write_cache_results(unchecked, confirmed, "ad")
+            # Never persist hashes that were not actually checked as "uncached".
+            self._write_cache_results(
+                [torrent for torrent in unchecked if torrent["hash"].lower() not in not_checked], confirmed, "ad"
+            )
         except Exception:
             g.log_stacktrace()
 
@@ -1415,11 +1457,14 @@ class TorrentCacheCheck:
                 elif info_hash not in confirmed:
                     needs_check.append(torrent)
 
+            unverified = set()
             if needs_check:
-                imdb, season, episode = self._external_imdb_context(info)
-                if imdb:
+                imdb, season, episode, extra_contexts = self._external_lookup(info)
+                if imdb or extra_contexts:
                     hash_list = [torrent["hash"].lower() for torrent in needs_check]
-                    ext_cached, success = external_cache.check_rd_external(hash_list, imdb, season, episode)
+                    ext_cached, success = external_cache.check_rd_external(
+                        hash_list, imdb, season, episode, extra_contexts=extra_contexts
+                    )
                     if success is not False:
                         confirmed |= self._mark_confirmed_torrents(needs_check, ext_cached, "real_debrid")
                     elif success is False:
@@ -1428,10 +1473,35 @@ class TorrentCacheCheck:
                             confirmed |= self._mark_confirmed_torrents(
                                 needs_check, rd_cached_set, "real_debrid"
                             )
+                elif self._is_anime_episode(info):
+                    unverified = self._store_unverified_rd_torrents(needs_check)
 
-            self._write_cache_results(unchecked, confirmed, "rd")
+            # Never persist hashes that were not actually checked as "uncached".
+            self._write_cache_results(
+                [torrent for torrent in unchecked if torrent["hash"].lower() not in unverified], confirmed, "rd"
+            )
         except Exception:
             g.log_stacktrace()
+
+    def _store_unverified_rd_torrents(self, torrent_list):
+        """
+        Anime episode without any id the external cache services understand (no IMDb, no
+        MAL/AniList/Kitsu mapping). Offer the torrents as Real-Debrid sources like Seren does;
+        the RD resolver verifies on play (adds the magnet, plays only if RD reports it
+        downloaded, otherwise deletes it and moves on to the next source).
+        """
+        g.log(
+            f"RD cache check: no IMDb/Kitsu id for anime episode, offering {len(torrent_list)} "
+            "torrents unverified (checked on play)",
+            "warning",
+        )
+        stored = set()
+        for torrent in torrent_list:
+            torrent["debrid_provider"] = "real_debrid"
+            torrent["unverified"] = True
+            self.store_torrent(torrent)
+            stored.add(torrent.get("hash", "").lower())
+        return stored
 
     def _handle_movie_rd_worker(self, source, real_debrid_cache):
         for storage_variant in real_debrid_cache[source['hash']]['rd']:
@@ -1516,6 +1586,80 @@ class TorrentCacheCheck:
             self._write_cache_results(unchecked, confirmed, "oc")
         except Exception:
             g.log_stacktrace()
+
+
+_ANIME_KITSU_LOCK = threading.Lock()
+
+
+class AnimeKitsuLookup:
+    """
+    Kitsu cache-check context ("kitsu:<id>", None, episode) for one anime episode scrape.
+    Created once per scrape (under a lock) and shared by every provider's cache check.
+    A kitsu_id already in the metadata is used directly; a MAL/AniList -> Kitsu mapping runs
+    in a background thread bounded by external_cache.KITSU_LOOKUP_BUDGET.
+    """
+
+    def __init__(self, info):
+        self.context = None
+        self._done = threading.Event()
+        self._pending = None
+        self._deadline = time.monotonic() + external_cache.KITSU_LOOKUP_BUDGET + 1
+        try:
+            fields = self._anime_id_fields(info)
+        except Exception:
+            g.log_stacktrace()
+            fields = {}
+        episode = fields.get("simkl_episode_number")
+        if episode and fields.get("kitsu_id"):
+            self._finish(fields["kitsu_id"], episode, "metadata")
+        elif episode and (fields.get("mal_id") or fields.get("anilist_id")):
+            self._pending = (fields.get("mal_id"), fields.get("anilist_id"), episode)
+            if not prism_plugin_no_threads():
+                threading.Thread(target=self._resolve, daemon=True, name="prism-kitsu-lookup").start()
+        else:
+            self._finish(None, episode, "no anime ids")
+
+    @staticmethod
+    def _anime_id_fields(info):
+        from resources.lib.simkl.anime_scraper_context import build_anime_simple_info_fields
+
+        item = info or {}
+        return build_anime_simple_info_fields(item.get("info") or {}, item, item.get("_parent_show_info") or {})
+
+    @staticmethod
+    def for_scrape(scraper_class, info):
+        with _ANIME_KITSU_LOCK:
+            lookup = getattr(scraper_class, "_anime_kitsu_lookup", None)
+            if lookup is None:
+                lookup = AnimeKitsuLookup(info)
+                with contextlib.suppress(AttributeError):
+                    scraper_class._anime_kitsu_lookup = lookup
+        return lookup
+
+    def _resolve(self):
+        mal_id, anilist_id, episode = self._pending
+        kitsu_id = None
+        try:
+            kitsu_id = external_cache.resolve_kitsu_id(mal_id=mal_id, anilist_id=anilist_id)
+        except Exception:
+            g.log_stacktrace()
+        self._finish(kitsu_id, episode, f"mal={mal_id} anilist={anilist_id}")
+
+    def _finish(self, kitsu_id, episode, origin):
+        self.context = (f"kitsu:{kitsu_id}", None, str(episode)) if kitsu_id else None
+        g.log(f"Anime cache check: Kitsu lookup {self.context or 'unavailable'} ({origin})", "info")
+        self._done.set()
+
+    def get(self, wait=False):
+        """The Kitsu context or None. Waits (bounded by the lookup budget) only when asked."""
+        if wait and not self._done.is_set():
+            if prism_plugin_no_threads() and self._pending:
+                with _ANIME_KITSU_LOCK:
+                    if not self._done.is_set():
+                        self._resolve()
+            else:
+                self._done.wait(max(0.0, self._deadline - time.monotonic()))
+        return self.context if self._done.is_set() else None
 
 
 class SourceWindowAdapter:

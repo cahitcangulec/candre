@@ -63,7 +63,7 @@ class CloudScraper(ApiBase):
         cloud_items = [i for i in cloud_items if self._is_valid_pack(i)]
         if self._preterm_check():
             return []
-        cloud_items = self._identify_items(cloud_items)
+        cloud_items = self._identify_packs(cloud_items)
         if self._preterm_check():
             return []
         cloud_items = [self._source_to_file(i) for i in cloud_items]
@@ -128,6 +128,10 @@ class CloudScraper(ApiBase):
             return sources
 
         return sources
+
+    def _identify_packs(self, cloud_items):
+        """Top-level (torrent / transfer) identification, before _source_to_file."""
+        return self._identify_items(cloud_items)
 
     def _source_to_file(self, source):
         return source
@@ -230,13 +234,45 @@ class RealDebridCloudScraper(CloudScraper):
     def _fetch_cloud_items(self):
         return self.api_adapter.list_torrents()
 
+    def _is_anime_episode_scrape(self):
+        return bool(self.media_type == g.MEDIA_EPISODE and self.simple_info and self.simple_info.get("isanime"))
+
+    def _is_anime_pack_candidate(self, item):
+        # Torrent-level only: _source_to_file matches the individual files to the episode.
+        if not self._is_anime_episode_scrape():
+            return False
+        return source_utils.cloud_anime_pack_candidate(self._get_clean_title(item), self.simple_info)
+
+    def _is_valid_pack(self, item):
+        return super()._is_valid_pack(item) or self._is_anime_pack_candidate(item)
+
+    def _identify_packs(self, cloud_items):
+        if self._is_anime_episode_scrape():
+            # _is_valid_pack already applied the episode matcher plus the anime batch check.
+            return cloud_items
+        return super()._identify_packs(cloud_items)
+
+    def _identify_anime_episode_files(self, source_files):
+        # Episode matchers only: the season-pack regex matches every "Show Season 1 - NN" file.
+        matches = [
+            file
+            for file in source_files
+            if source_utils.cloud_episode_file_matches(
+                self._cloud_match_title(file), episode_regex=self.episode_regex, simple_info=self.simple_info
+            )
+        ]
+        return sorted(matches, key=lambda file: file.get("size") or 0, reverse=True)
+
     def _source_to_file(self, source):
         if "links" not in source:
             return None
         source_files = self._normalize_item(self.api_adapter.torrent_info(source['id'])['files'])
         source_files = [i for i in source_files if i["selected"]]
         [file.update({"idx": idx}) for idx, file in enumerate(source_files)]
-        source_files = self._identify_items(source_files)
+        if self._is_anime_episode_scrape():
+            source_files = self._identify_anime_episode_files(source_files)
+        else:
+            source_files = self._identify_items(source_files)
         [file.update({"url": source['links'][file['idx']]}) for file in source_files]
         return source_files[0] if source_files else None
 

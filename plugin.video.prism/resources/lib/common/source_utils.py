@@ -506,6 +506,11 @@ def _torrent_episode_file_matches(match_title: str, episode_regex, simple_info: 
     return cloud_loose_episode_match(match_title, simple_info)
 
 
+def cloud_episode_file_matches(release_title: str, *, episode_regex, simple_info: dict) -> bool:
+    """Episode-only matching (no season-pack regex) for a file inside a cloud torrent."""
+    return _torrent_episode_file_matches(clean_title(release_title), episode_regex, simple_info)
+
+
 def _show_titles_from_simple_info(simple_info: dict) -> list[str]:
     titles = [simple_info.get("show_title") or ""]
     titles.extend(simple_info.get("show_aliases") or [])
@@ -560,7 +565,70 @@ def _release_matches_season_episode(release_title: str, season: str, episode: st
     return False
 
 
-def _release_matches_absolute_episode(release_title: str, absolute_number: str) -> bool:
+_ANIME_COUNTER_WORDS = frozenset({"season", "s", "part", "pt", "vol", "volume", "cour", "batch", "disc"})
+_ORDINAL_TOKEN = re.compile(r"\d+(?:st|nd|rd|th)")
+
+
+def _anime_clean_show_titles(simple_info: dict) -> set:
+    titles = set()
+    for title in _show_titles_from_simple_info(simple_info):
+        titles.add(clean_title_with_simple_info(title, simple_info))
+        titles.add(clean_title(title))
+    titles.discard("")
+    return titles
+
+
+def _is_counter_word(tokens: list, idx: int) -> bool:
+    """tokens[idx] labels a counter ("Season 01", "Vol 05"), not a title word ("2nd Season")."""
+    if idx < 0 or tokens[idx] not in _ANIME_COUNTER_WORDS:
+        return False
+    before = tokens[idx - 1] if idx > 0 else ""
+    return not (_ORDINAL_TOKEN.fullmatch(before) or before in ("final", "last"))
+
+
+def _token_in_show_title(tokens: list, idx: int, show_titles) -> bool:
+    """True when tokens[idx] (a number) belongs to the show title ("Mob Psycho 100", "Zom 100")."""
+    if idx <= 0:
+        return False
+    bigram = f" {tokens[idx - 1]} {tokens[idx]} "
+    return any(bigram in f" {title} " for title in show_titles)
+
+
+def _anime_padded_episode_match(release_title: str, abs_num: str, show_titles=()) -> bool:
+    """
+    Fansub releases number episodes "Show - 05" / "Show - 05v2" (zero-padded to two digits).
+    Not an episode number: a counter after season/part/vol/cour/batch ("Season 01", "Vol 05"),
+    or a bound of a batch range ("01 12"). A number that is part of the show title
+    ("Mob Psycho 100 - 05") is not taken for a range bound.
+    """
+    two_digit = abs_num.zfill(2)
+    if two_digit == abs_num:
+        return False
+    episode_token = re.compile(rf"(?:e|ep)?{two_digit}(?:v\d)?")
+    tokens = release_title.split()
+    for idx, token in enumerate(tokens):
+        if not episode_token.fullmatch(token):
+            continue
+        prev_token = tokens[idx - 1] if idx > 0 else ""
+        next_token = tokens[idx + 1] if idx + 1 < len(tokens) else ""
+        if _is_counter_word(tokens, idx - 1) and not _token_in_show_title(tokens, idx, show_titles):
+            continue
+        if next_token.isdigit() and len(next_token) <= 3:
+            continue
+        if (
+            prev_token.isdigit()
+            and 2 <= len(prev_token) <= 3
+            and not _is_counter_word(tokens, idx - 2)
+            and not _token_in_show_title(tokens, idx - 1, show_titles)
+        ):
+            continue
+        return True
+    return False
+
+
+def _release_matches_absolute_episode(
+    release_title: str, absolute_number: str, anime: bool = False, show_titles=()
+) -> bool:
     if absolute_number in (None, ""):
         return False
     abs_num = str(absolute_number).lstrip("0") or "0"
@@ -577,7 +645,7 @@ def _release_matches_absolute_episode(release_title: str, absolute_number: str) 
     ):
         if needle in haystack:
             return True
-    return False
+    return anime and _anime_padded_episode_match(release_title, abs_num, show_titles)
 
 
 def _anime_cloud_coordinate_sets(simple_info: dict) -> list[tuple[str, str, str]]:
@@ -616,11 +684,13 @@ def cloud_loose_episode_match(release_title: str, simple_info: dict) -> bool:
         if _release_matches_season_episode(release_title, season, episode):
             return True
 
+    anime = bool(simple_info.get("isanime"))
+    show_titles = _anime_clean_show_titles(simple_info) if anime else ()
     for abs_key in ("simkl_episode_number", "absolute_number"):
         absolute_number = simple_info.get(abs_key)
         if absolute_number in (None, ""):
             continue
-        if _release_matches_absolute_episode(release_title, str(absolute_number)):
+        if _release_matches_absolute_episode(release_title, str(absolute_number), anime=anime, show_titles=show_titles):
             return True
 
     return check_episode_title_match(
@@ -628,6 +698,33 @@ def cloud_loose_episode_match(release_title: str, simple_info: dict) -> bool:
         release_title,
         simple_info,
     )
+
+
+_ANIME_BATCH_MARKER = re.compile(r" (?:batch|complete|\d{2,4} \d{2,4}|s\d{1,2}|season \d{1,2})(?= )")
+
+
+def cloud_anime_pack_candidate(release_title: str, simple_info: dict) -> bool:
+    """
+    Anime batch torrents ("[Group] Show (01-12) [1080p]") carry no SxxEyy episode marker, so
+    the episode/season filters reject them at torrent level. Accept a torrent that has a batch
+    marker (range, "Batch", "Complete", "S01", "Season 1") and contains the show title or a
+    multi-word alias of at least 4 characters (single-word aliases such as "Bleach" are usually
+    the franchise name). Callers must still match the files inside to the episode.
+    Always False for non-anime items.
+    """
+    if not simple_info or not simple_info.get("isanime"):
+        return False
+    haystack = f" {clean_title(release_title)} "
+    if not _ANIME_BATCH_MARKER.search(haystack):
+        return False
+    show_title = simple_info.get("show_title") or ""
+    for title in _show_titles_from_simple_info(simple_info):
+        for candidate in (clean_title_with_simple_info(title, simple_info), clean_title(title)):
+            if len(candidate) < 4 or (title != show_title and " " not in candidate):
+                continue
+            if f" {candidate} " in haystack:
+                return True
+    return False
 
 
 def cloud_episode_item_matches(
@@ -1053,6 +1150,18 @@ def get_best_episode_match_cloud(dict_key, dictionary_list, item_information, si
 
     if not matches:
         return get_best_episode_match(dict_key, dictionary_list, item_information)
+
+    if len(matches) > 1 and simple_info.get("isanime"):
+        # Folder names ("Season 01", "(01-12)") can make every file of a batch match;
+        # prefer the files whose own name matches the episode.
+        by_name = [
+            item
+            for item in matches
+            if _torrent_episode_file_matches(
+                clean_title(str(item.get(dict_key, "")).replace("\\", "/").split("/")[-1]), episode_regex, simple_info
+            )
+        ]
+        matches = by_name or matches
 
     if len(matches) == 1:
         return matches[0]
