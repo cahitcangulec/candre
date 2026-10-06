@@ -1,6 +1,6 @@
 # Prism 5.0.57: every Real-Debrid torrent shown as uncached (DMM auth broken)
 
-> Investigation and fix of 2026-10-06, released as plugin.video.prism 5.0.58 (commit pending).
+> Investigation and fix of 2026-10-06, released as plugin.video.prism 5.0.58 (fix 49a0a40, version bump 3db18dc).
 > Follow-up to `docs/anime-rd-cache-investigation.md` (5.0.57), which did **not** fix this case.
 > Paths are relative to `plugin.video.prism/resources/lib/`. "HEAD:n" is a line in c28dfbe
 > (5.0.57). The fixed code is cited by function name. Open items are tracked in `.wolf/STATUS.md`.

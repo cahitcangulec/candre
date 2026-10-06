@@ -37,6 +37,7 @@
 - [2026-10-06] Anime release names ("[Group] Show - 05", batches "(01-12)") do not follow SxxEyy; title-anchored regexes and unpadded needles miss them. Test matchers against fansub naming.
 - [2026-10-06] Never persist a hash as uncached unless a hash-authoritative service (DMM, or the debrid's own hash-check API) actually answered for that hash. Persisting failed or unanswered checks as "False" hid every DMM-only release for 4 h per scrape.
 - [2026-10-06] When a third-party API silently returns 403, an error payload or an empty result, treat it as "no answer", not as a negative. Checkers must return `None` for no answer and `set()` only for a real answer. The DMM 403 went unnoticed for five weeks because it was swallowed as an empty set.
+- [2026-10-06] An unquoted Bash heredoc (`<<EOF`) runs backtick and `$(...)` command substitution inside the text. Writing a STATUS line containing a backticked `git push ...` that way executed the push. Always quote heredoc delimiters (`<<'EOF'`) when the text holds backticks, and pass paths as arguments instead of interpolating them.
 - [2026-10-06] The 5.0.57 anime fix grew out of a generic hypothesis (no IMDb id) and did not fix the user's actual case. Lord of Mysteries has IMDb and Kitsu ids, so that code path never ran. Before concluding, reproduce the reported title live: its ids, the scraper output, and each external service separately.
 
 ## Decision Log

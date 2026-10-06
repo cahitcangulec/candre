@@ -8,7 +8,7 @@
 
 ## ✅ Done
 
-- **2026-10-06 — RD cache detection restored (plugin.video.prism 5.0.58, commit pending).**
+- **2026-10-06 — RD cache detection restored (49a0a40, released as plugin.video.prism 5.0.58 in 3db18dc, gh-pages 3cc2944).**
   User report: in 5.0.57, every RD torrent for "Lord of Mysteries" S01E01 showed as uncached,
   while Seren 3.0.62 showed many as cached.
   - Seren's "cached" is unverified labelling: its `_realdebrid_worker` marks every scraped
@@ -62,6 +62,8 @@ https://github.com/cahitcangulec/candre.
 ### Open items (code paths relative to `plugin.video.prism/resources/lib/`)
 1. **Confirm 5.0.58 in Kodi.** The user tested 5.0.57 in Kodi on another device; Lord of Mysteries
    was still all-uncached, which led to 5.0.58. 5.0.58 has not been tested yet.
+   - 5.0.58 is published: origin/master 3db18dc and origin/gh-pages 3cc2944 (pushed 2026-10-06),
+     so Kodi picks it up from https://cahitcangulec.github.io/candre/.
    - Install 5.0.58. The version change purges stale negatives by itself; kodi.log shows
      `Clearing uncached debrid hashes on Prism version change` and `DebridCache: Cleared N uncached entries`.
      Alternatively use Tools -> Clear Local Torrent Cache.

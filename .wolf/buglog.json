@@ -35,7 +35,7 @@
       "related_bugs": ["bug-001", "bug-003"],
       "occurrences": 1,
       "last_seen": "2026-10-06T21:30:00.000Z",
-      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "status": "fixed in 5.0.58 (49a0a40), not yet confirmed inside Kodi",
       "details": "docs/rd-cache-dmm-fix.md"
     },
     {
@@ -58,7 +58,7 @@
       "related_bugs": ["bug-001", "bug-002"],
       "occurrences": 1,
       "last_seen": "2026-10-06T21:30:00.000Z",
-      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "status": "fixed in 5.0.58 (49a0a40), not yet confirmed inside Kodi",
       "details": "docs/rd-cache-dmm-fix.md"
     },
     {
@@ -75,7 +75,7 @@
       "related_bugs": ["bug-003"],
       "occurrences": 1,
       "last_seen": "2026-10-06T21:30:00.000Z",
-      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "status": "fixed in 5.0.58 (49a0a40), not yet confirmed inside Kodi",
       "details": "docs/rd-cache-dmm-fix.md"
     },
     {
@@ -92,7 +92,7 @@
       "related_bugs": ["bug-001"],
       "occurrences": 1,
       "last_seen": "2026-10-06T21:30:00.000Z",
-      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "status": "fixed in 5.0.58 (49a0a40), not yet confirmed inside Kodi",
       "details": "docs/rd-cache-dmm-fix.md"
     },
     {
@@ -109,7 +109,7 @@
       "related_bugs": ["bug-003"],
       "occurrences": 1,
       "last_seen": "2026-10-06T21:30:00.000Z",
-      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "status": "fixed in 5.0.58 (49a0a40), not yet confirmed inside Kodi",
       "details": "docs/rd-cache-dmm-fix.md"
     },
     {
@@ -127,7 +127,7 @@
       "related_bugs": ["bug-002", "bug-003", "bug-005"],
       "occurrences": 1,
       "last_seen": "2026-10-06T23:00:00.000Z",
-      "status": "fixed in 5.0.58 (commit pending), not yet confirmed inside Kodi",
+      "status": "fixed in 5.0.58 (49a0a40), not yet confirmed inside Kodi",
       "details": "docs/rd-cache-dmm-fix.md"
     }
   ]
