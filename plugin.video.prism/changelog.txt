@@ -1,3 +1,14 @@
+Changelog 5.0.58
+[BUG] Real-Debrid/AllDebrid: restore DMM cache detection for all movies and TV (DMM moved to server-issued challenge tokens on 2026-08-31, every check returned 403)
+[BUG] Real-Debrid/AllDebrid: failed or unanswered cache checks are no longer saved as uncached for 4 hours
+[BUG] Comet: skip a base that returns only an "Invalid API key" error stream and try the next one
+[BUG] AIOStreams: remove the dead aiostreams.vortetos.com instance
+[BUG] Real-Debrid: refresh an expired access token before the external cache check
+[BUG] Cloud: TV season packs named "S01" / "Season 01" now match (Seren-era typo)
+[CHANGE] Real-Debrid torrents whose cache state could not be checked are offered as "Unverified" (checked on play) and sorted after verified sources
+[CHANGE] Torrentio "[RD+]" / "[AD+]" markers from scrapers are honoured; DMM checks send all hashes (chunks of 100) and repeated answers are reused for 60 s
+[CHANGE] Stale "uncached" torrent cache entries are cleared automatically after updating Prism
+
 Changelog 5.0.57
 [BUG] Anime: fix episodes showing 0 cached and 0 cloud Real-Debrid sources (Kitsu ID lookup for cache checks)
 
