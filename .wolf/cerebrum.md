@@ -2,7 +2,7 @@
 
 > OpenWolf's learning memory. Updated automatically as the AI learns from interactions.
 > Do not edit manually unless correcting an error.
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 ## User Preferences
 
@@ -18,7 +18,8 @@
 - **Verification without Kodi:** use `python -m py_compile` and stubbed harnesses (stub `xbmc*`, `unidecode`, `resources.lib.modules.globals.g`), remove `__pycache__` afterwards, and ask the user to confirm in Kodi.
 - **Kodi userdata on this machine:** `%APPDATA%\Kodi` exists with Seren 3.0.62 + a4kScrapers (kodi.log last written 2026-09-23); Prism is not installed there, and the user tests Prism in Kodi on another device. The older note "Kodi cannot run locally" was never verified, so check before assuming it.
 - **Publishing:** `tools/build_repo.py <repo> <out> [ref] [--reuse-zips <dir>]` packages committed git blobs of the ref (default master), not the working tree. It reproduces the published addons.xml md5 byte-for-byte. Since 2026-10-07 CI (`.github/workflows/publish-repo.yml`) runs it on every addon push to master and pushes gh-pages, so a release needs only version bump + changelog + `git push origin master`. `--reuse-zips` keeps an already-published `<addon>-<version>.zip` byte for byte. Zips rebuilt from the same commit are byte-identical only with the same zlib (Python 3.11 zlib 1.3.1 and Python 3.14 zlib-ng differ).
-- **A gh-pages push does not guarantee a Pages deploy:** the 2026-10-06 push of gh-pages 3cc2944 never started a "pages build and deployment" run, so Pages kept serving f2630d4 (5.0.57). After publishing, compare `gh api repos/cahitcangulec/candre/pages/builds/latest` (commit) or the live addons.xml with the gh-pages tip. The CI workflow requests a build when they differ.
+- **A gh-pages push does not guarantee a Pages deploy:** the 2026-10-06 21:45 UTC push of gh-pages 3cc2944 never started a "pages build and deployment" run (likely during a GitHub service incident, unconfirmed), so Pages kept serving f2630d4 (5.0.57) until a manual `gh api -X POST repos/cahitcangulec/candre/pages/builds` deployed 3cc2944 (5.0.58 live since 2026-10-06 23:59 UTC). After publishing, compare `gh api repos/cahitcangulec/candre/pages/builds/latest` (commit) or the live addons.xml with the gh-pages tip. The CI workflow requests a build when they differ.
+- **Kodi updates follow the addon's origin (Kodi 19+, `xbmc/addons/AddonRepos.cpp`):** an addon auto-updates only from the repository it was installed from. A zip install has origin "" ("Manual" on the info page) and is checked only against the official Kodi repo, never against Candre Repository. Fix once per device: Prism info page -> Versions -> newest "Candre Repository" entry (keeps settings), or Install from repository -> Candre Repository -> Prism (answer No to removing settings).
 - **RD cache checks:** RD `/torrents/instantAvailability` is dead (disabled late 2024). Prism verifies cache via external services (DMM, Torrentio, Comet, AIOStreams) in `debrid/external_cache.py`, keyed on IMDb or `kitsu:<id>`. Torrentio/Comet accept `kitsu:` ids; DMM is IMDb-only.
 - **Anime metadata:** IMDb ids come only from Simkl and are often missing for anime (especially sequel cours). MAL/AniList/Kitsu ids and native `anime_episode` numbering are available on the item.
 - **Cloud sources:** RD cloud inspection only lists the newest 100 torrents in the account, and `rd.autodelete` defaults to true, so 0 cloud sources is often correct.

@@ -140,8 +140,8 @@
         "tools/build_repo.py",
         ".wolf/STATUS.md"
       ],
-      "root_cause": "GitHub Pages never started a 'pages build and deployment' run for the 3cc2944 push: GET /repos/cahitcangulec/candre/pages/builds lists only the f2630d4 build (2026-10-06T20:30Z). Why the push did not trigger a build is unknown. Publishing was manual, so nobody checked the deployed commit.",
-      "fix": "Publishing is automated by .github/workflows/publish-repo.yml. Its last step compares pages/builds/latest with the gh-pages tip and requests a Pages build (POST /pages/builds) when they differ, so the first run after pushing master also deploys 3cc2944. Manual alternative: gh api -X POST repos/cahitcangulec/candre/pages/builds.",
+      "root_cause": "GitHub Pages never started a 'pages build and deployment' run for the 3cc2944 push: GET /repos/cahitcangulec/candre/pages/builds lists only the f2630d4 build (2026-10-06T20:30Z). Why the push did not trigger a build is unknown. Publishing was manual, so nobody checked the deployed commit. Likely cause (unconfirmed): the push at 2026-10-06 21:45 UTC fell inside a GitHub 'several services degraded' incident (19:57-23:40 UTC).",
+      "fix": "Deployed by hand: gh api -X POST repos/cahitcangulec/candre/pages/builds (2026-10-06 23:58:47 UTC, HTTP 201) built 3cc2944 in 23 s; since 23:59 UTC the live addons.xml lists plugin.video.prism 5.0.58 (addons.xml.md5 1aef23e379d972cb215dc53b7eef877c) and the 5.0.58 zip is served. Prevention: .github/workflows/publish-repo.yml's last step compares pages/builds/latest with the gh-pages tip and requests a Pages build (POST /pages/builds) when they differ.",
       "tags": [
         "github-pages",
         "gh-pages",
@@ -152,7 +152,7 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-10-07T00:00:00.000Z",
-      "status": "fix committed on master, not pushed; verify the live addons.xml shows 5.0.58 after the first workflow run"
+      "status": "resolved 2026-10-06 23:59 UTC (5.0.58 live after a manual Pages build request); CI guard committed on master"
     }
   ]
 }

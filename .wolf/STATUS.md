@@ -2,12 +2,18 @@
 
 > Single source of truth for resuming work. Read this FIRST when starting a session.
 > Update this file at the end of every work phase so the next `/clear` resumes in 1 read.
-> Last updated: 2026-10-07 (CI publishing of gh-pages)
+> Last updated: 2026-10-07 (5.0.58 live after a manual Pages build; Kodi origin rule)
 
 ---
 
 ## ✅ Done
 
+- **2026-10-07 — plugin.video.prism 5.0.58 is live (deployed 2026-10-06 23:59 UTC).**
+  - A manual Pages build request (`gh api -X POST repos/cahitcangulec/candre/pages/builds`,
+    2026-10-06 23:58:47 UTC, HTTP 201) built gh-pages 3cc2944 in 23 s.
+  - https://cahitcangulec.github.io/candre/ serves addons.xml with plugin.video.prism 5.0.58
+    (addons.xml.md5 `1aef23e379d972cb215dc53b7eef877c`) and
+    `zips/plugin.video.prism/plugin.video.prism-5.0.58.zip` (HTTP 200, 8596527 bytes). No CDN lag.
 - **2026-10-07 — Automatic publishing (committed on master, not pushed yet).**
   - `.github/workflows/publish-repo.yml` ("Publish Kodi repository") runs on every push to master
     that touches `plugin.video.prism/`, `context.prism/`, `repository.candre/`,
@@ -16,10 +22,9 @@
   - `tools/build_repo.py --reuse-zips <dir>` keeps an already-published `<addon>-<version>.zip`
     byte for byte (and takes addon.xml/art from it), so runs without a version bump change nothing.
     Zip timestamps are now the ref's commit time (UTC) instead of the local build time.
-  - Found while checking: the push of gh-pages 3cc2944 (5.0.58) never started a Pages build. Pages
-    still serves f2630d4, and the live addons.xml lists plugin.video.prism **5.0.57** (checked
-    2026-10-07). The workflow's last step requests a Pages build whenever the deployed commit is not
-    the gh-pages tip, so the first run (started by pushing this commit) also deploys 5.0.58.
+  - History: the push of gh-pages 3cc2944 (2026-10-06 21:45 UTC) never started a Pages build (likely
+    a GitHub incident, unconfirmed), so the workflow's last step requests a Pages build whenever the
+    deployed commit is not the gh-pages tip. 3cc2944 itself was deployed by hand (entry above).
 - **2026-10-06 — RD cache detection restored (49a0a40, released as plugin.video.prism 5.0.58 in 3db18dc, gh-pages 3cc2944).**
   User report: in 5.0.57, every RD torrent for "Lord of Mysteries" S01E01 showed as uncached,
   while Seren 3.0.62 showed many as cached.
@@ -69,17 +74,16 @@ https://github.com/cahitcangulec/candre.
 - Branches: `master` = code, `gh-pages` = published Kodi repo (https://cahitcangulec.github.io/candre/).
 - Addons: `plugin.video.prism/` 5.0.58, `context.prism/` 4.0.2, `repository.candre/` 1.0.0. Python 3.
 
-**Goal:** push master (the first "Publish Kodi repository" run must succeed and Pages must serve
-5.0.58), then the user confirms 5.0.58 in Kodi, then close the remaining open items.
+**Goal:** push master (the first "Publish Kodi repository" run must succeed; 5.0.58 is already
+live, so it should find nothing to publish), then the user sets Prism's origin to Candre Repository
+and confirms 5.0.58 in Kodi, then close the remaining open items.
 
 ### Open items (code paths relative to `plugin.video.prism/resources/lib/`)
 1. **Confirm 5.0.58 in Kodi.** The user tested 5.0.57 in Kodi on another device; Lord of Mysteries
    was still all-uncached, which led to 5.0.58. 5.0.58 has not been tested yet.
-   - 5.0.58 is on origin/gh-pages 3cc2944 (pushed 2026-10-06), but GitHub Pages never deployed
-     that commit: https://cahitcangulec.github.io/candre/addons.xml still lists 5.0.57 (checked
-     2026-10-07). Push master: the first "Publish Kodi repository" run requests the Pages build.
-     Without CI: Settings -> Pages, or `gh api -X POST repos/cahitcangulec/candre/pages/builds`.
-     Confirm that the live addons.xml shows 5.0.58 before the user tests.
+   - 5.0.58 is live at https://cahitcangulec.github.io/candre/ (gh-pages 3cc2944, deployed
+     2026-10-06 23:59 UTC after a manual Pages build request).
+   - Kodi only auto-updates Prism if its origin is "Candre Repository" (see "Kodi update rule").
    - Install 5.0.58. The version change purges stale negatives by itself; kodi.log shows
      `Clearing uncached debrid hashes on Prism version change` and `DebridCache: Cleared N uncached entries`.
      Alternatively use Tools -> Clear Local Torrent Cache.
@@ -102,6 +106,15 @@ https://github.com/cahitcangulec/candre.
    unavailable are still stored "False" for 4 h. If users report false "uncached" results,
    consider a shorter negative TTL, or offering DMM-negative RD hashes as unverified too.
 
+### Kodi update rule (Kodi 19+, from Kodi source `xbmc/addons/AddonRepos.cpp`)
+- An addon auto-updates only from the repository it was installed from (its origin). A zip install
+  has origin "" ("Manual" on its info page) and is checked only against the official Kodi repo.
+- So the user's Prism needs Origin = "Candre Repository". One-time fix: Prism info page -> Versions
+  -> newest entry labelled "Candre Repository" (keeps settings), or Install from repository ->
+  Candre Repository -> Prism (answer No to removing settings).
+- Then the default "Install updates automatically" applies: checks at startup and every 24 h, or on
+  demand via Add-on browser -> Check for updates.
+
 ### Release flow (automatic since 2026-10-07)
 1. Bump the version in `plugin.video.prism/addon.xml` (or `context.prism/` / `repository.candre/`).
 2. Add a block at the top of `plugin.video.prism/changelog.txt`.
@@ -110,7 +123,8 @@ https://github.com/cahitcangulec/candre.
    `tools/build_repo.py . <worktree> HEAD --reuse-zips <worktree>`. If the tree changed, CI commits
    "Publish <addon> <version>" on gh-pages as github-actions[bot] and pushes it. If GitHub Pages
    is not serving the gh-pages tip, CI requests a Pages build.
-5. Kodi installs with `repository.candre` see the new addons.xml.md5 and update by themselves.
+5. Kodi installs with `repository.candre` see the new addons.xml.md5 and update by themselves, but
+   only for addons whose origin is "Candre Repository" (see "Kodi update rule").
 - Code pushed without a version bump is **not** published: the published zip for a version never
   changes, and the run shows a warning annotation. Bump the version to release.
 - Manual run: GitHub -> Actions -> "Publish Kodi repository" -> Run workflow (master only).
