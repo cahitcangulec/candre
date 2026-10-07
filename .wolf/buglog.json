@@ -129,6 +129,30 @@
       "last_seen": "2026-10-06T23:00:00.000Z",
       "status": "fixed in 5.0.58 (49a0a40), not yet confirmed inside Kodi",
       "details": "docs/rd-cache-dmm-fix.md"
+    },
+    {
+      "id": "bug-008",
+      "timestamp": "2026-10-07T00:00:00.000Z",
+      "error_message": "gh-pages 3cc2944 (plugin.video.prism 5.0.58) was pushed on 2026-10-06, but https://cahitcangulec.github.io/candre/addons.xml still lists 5.0.57",
+      "file": ".github/workflows/publish-repo.yml",
+      "files": [
+        ".github/workflows/publish-repo.yml",
+        "tools/build_repo.py",
+        ".wolf/STATUS.md"
+      ],
+      "root_cause": "GitHub Pages never started a 'pages build and deployment' run for the 3cc2944 push: GET /repos/cahitcangulec/candre/pages/builds lists only the f2630d4 build (2026-10-06T20:30Z). Why the push did not trigger a build is unknown. Publishing was manual, so nobody checked the deployed commit.",
+      "fix": "Publishing is automated by .github/workflows/publish-repo.yml. Its last step compares pages/builds/latest with the gh-pages tip and requests a Pages build (POST /pages/builds) when they differ, so the first run after pushing master also deploys 3cc2944. Manual alternative: gh api -X POST repos/cahitcangulec/candre/pages/builds.",
+      "tags": [
+        "github-pages",
+        "gh-pages",
+        "release",
+        "deploy",
+        "ci"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-10-07T00:00:00.000Z",
+      "status": "fix committed on master, not pushed; verify the live addons.xml shows 5.0.58 after the first workflow run"
     }
   ]
 }

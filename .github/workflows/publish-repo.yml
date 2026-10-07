@@ -1,0 +1,118 @@
+# Publish the Kodi repository (branch gh-pages) whenever an addon changes on master.
+#
+# Flow: tools/build_repo.py packages the committed master tree into the gh-pages layout
+# (addons.xml, addons.xml.md5, zips/<addon>/...). If the result differs from gh-pages, it is
+# committed as github-actions[bot] and pushed. GitHub Pages serves the branch at
+# https://cahitcangulec.github.io/candre/, and Kodi installs that have repository.candre see the
+# new addons.xml.md5 and update. Kodi only installs a higher version, so a release still needs
+# the version bump in <addon>/addon.xml (plus a changelog line) on master.
+#
+# GitHub Pages must stay configured as "Deploy from a branch: gh-pages / (root)" (Settings ->
+# Pages; it is, build_type "legacy"). A push to gh-pages, also one made with GITHUB_TOKEN, starts
+# GitHub's "pages build and deployment" run. The last step also requests a Pages build through the
+# API whenever the deployed commit is not the gh-pages tip, because the manual push of gh-pages
+# 3cc2944 on 2026-10-06 never started one.
+#
+# Plain git instead of peaceiris/actions-gh-pages: the build needs the current gh-pages tree as
+# input (--reuse-zips keeps every already-published zip byte for byte; a rebuilt zip would get new
+# timestamps and produce a commit on every run), so gh-pages is checked out anyway. The script
+# writes straight into that worktree after deleting everything in it except .git, so the branch
+# ends up exactly equal to the build output with no stale files. Plain git also gives the
+# no-change check and the commit message, without a third-party action holding a write token.
+#
+# Idempotent: a run whose build matches gh-pages commits nothing and succeeds.
+# Fallback without CI: the manual tools/build_repo.py flow in .wolf/STATUS.md.
+
+name: Publish Kodi repository
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'plugin.video.prism/**'
+      - 'context.prism/**'
+      - 'repository.candre/**'
+      - 'tools/build_repo.py'
+      - '.github/workflows/publish-repo.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write  # push to gh-pages
+  pages: write     # request a Pages build when the push did not start one
+
+concurrency:
+  group: publish-gh-pages  # never two pushes to gh-pages at once; runs queue instead
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash  # bash -eo pipefail
+
+jobs:
+  publish:
+    # workflow_dispatch can be started on any branch; only master is published
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out master
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1  # build_repo.py reads the blobs of HEAD only
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'  # build_repo.py needs Python 3.7+ and the standard library only
+
+      - name: Check out gh-pages into a worktree
+        run: |
+          pages="$RUNNER_TEMP/gh-pages"
+          echo "PAGES=$pages" >> "$GITHUB_ENV"
+          git fetch --no-tags --depth=1 origin +refs/heads/gh-pages:refs/remotes/origin/gh-pages
+          git worktree add -B gh-pages "$pages" origin/gh-pages
+
+      - name: Build the Kodi repository into the worktree
+        # Already-published versions keep their zip (and the addon.xml/art inside it); only a new
+        # version is zipped. Pushing code without a version bump prints a warning annotation.
+        run: python tools/build_repo.py . "$PAGES" HEAD --reuse-zips "$PAGES"
+
+      - name: Commit and push gh-pages if the build changed it
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "$PAGES" add -A
+          if [ -z "$(git -C "$PAGES" status --porcelain)" ]; then
+            echo "gh-pages already matches master ${GITHUB_SHA::7}; nothing to publish."
+            exit 0
+          fi
+          # Subject names the addon versions that changed; the body lists every published version.
+          versions=$(git show origin/gh-pages:addons.xml | python -c '
+          import sys, xml.etree.ElementTree as ET
+          old = {a.get("id"): a.get("version") for a in ET.fromstring(sys.stdin.buffer.read())}
+          new = [(a.get("id"), a.get("version")) for a in ET.parse(sys.argv[1]).getroot()]
+          print(", ".join(i + " " + v for i, v in new if old.get(i) != v) or "-")
+          print(", ".join(i + " " + v for i, v in new))
+          ' "$PAGES/addons.xml")
+          changed=$(sed -n 1p <<< "$versions")
+          all=$(sed -n 2p <<< "$versions")
+          if [ "$changed" = "-" ]; then subject="Rebuild Kodi repository (no version change)"; else subject="Publish $changed"; fi
+          git -C "$PAGES" commit -q -m "$subject" \
+            -m "Published: $all" \
+            -m "Built by tools/build_repo.py from master ${GITHUB_SHA} in ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          git -C "$PAGES" log -1 --stat
+          git push origin gh-pages  # from the main checkout, where actions/checkout stored the token
+
+      - name: Make sure GitHub Pages deploys the gh-pages tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tip=$(git rev-parse gh-pages)
+          deployed=$(gh api "repos/$GITHUB_REPOSITORY/pages/builds/latest" --jq .commit 2>/dev/null || true)
+          if [ "$deployed" = "$tip" ]; then
+            echo "GitHub Pages already serves gh-pages $tip."
+            exit 0
+          fi
+          echo "GitHub Pages serves ${deployed:-unknown}, gh-pages is $tip: requesting a Pages build."
+          gh api -X POST "repos/$GITHUB_REPOSITORY/pages/builds" \
+            || echo "::warning::Could not request a GitHub Pages build; check Settings -> Pages and the 'pages build and deployment' runs."

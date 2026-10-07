@@ -2,12 +2,24 @@
 
 > Single source of truth for resuming work. Read this FIRST when starting a session.
 > Update this file at the end of every work phase so the next `/clear` resumes in 1 read.
-> Last updated: 2026-10-06 (late: 5.0.58 DMM fix)
+> Last updated: 2026-10-07 (CI publishing of gh-pages)
 
 ---
 
 ## ✅ Done
 
+- **2026-10-07 — Automatic publishing (committed on master, not pushed yet).**
+  - `.github/workflows/publish-repo.yml` ("Publish Kodi repository") runs on every push to master
+    that touches `plugin.video.prism/`, `context.prism/`, `repository.candre/`,
+    `tools/build_repo.py` or the workflow, and on manual dispatch. It rebuilds gh-pages with
+    `tools/build_repo.py` and pushes it as github-actions[bot] only if the tree changed.
+  - `tools/build_repo.py --reuse-zips <dir>` keeps an already-published `<addon>-<version>.zip`
+    byte for byte (and takes addon.xml/art from it), so runs without a version bump change nothing.
+    Zip timestamps are now the ref's commit time (UTC) instead of the local build time.
+  - Found while checking: the push of gh-pages 3cc2944 (5.0.58) never started a Pages build. Pages
+    still serves f2630d4, and the live addons.xml lists plugin.video.prism **5.0.57** (checked
+    2026-10-07). The workflow's last step requests a Pages build whenever the deployed commit is not
+    the gh-pages tip, so the first run (started by pushing this commit) also deploys 5.0.58.
 - **2026-10-06 — RD cache detection restored (49a0a40, released as plugin.video.prism 5.0.58 in 3db18dc, gh-pages 3cc2944).**
   User report: in 5.0.57, every RD torrent for "Lord of Mysteries" S01E01 showed as uncached,
   while Seren 3.0.62 showed many as cached.
@@ -57,13 +69,17 @@ https://github.com/cahitcangulec/candre.
 - Branches: `master` = code, `gh-pages` = published Kodi repo (https://cahitcangulec.github.io/candre/).
 - Addons: `plugin.video.prism/` 5.0.58, `context.prism/` 4.0.2, `repository.candre/` 1.0.0. Python 3.
 
-**Goal:** the user confirms 5.0.58 in Kodi, then close the remaining open items.
+**Goal:** push master (the first "Publish Kodi repository" run must succeed and Pages must serve
+5.0.58), then the user confirms 5.0.58 in Kodi, then close the remaining open items.
 
 ### Open items (code paths relative to `plugin.video.prism/resources/lib/`)
 1. **Confirm 5.0.58 in Kodi.** The user tested 5.0.57 in Kodi on another device; Lord of Mysteries
    was still all-uncached, which led to 5.0.58. 5.0.58 has not been tested yet.
-   - 5.0.58 is published: origin/master 3db18dc and origin/gh-pages 3cc2944 (pushed 2026-10-06),
-     so Kodi picks it up from https://cahitcangulec.github.io/candre/.
+   - 5.0.58 is on origin/gh-pages 3cc2944 (pushed 2026-10-06), but GitHub Pages never deployed
+     that commit: https://cahitcangulec.github.io/candre/addons.xml still lists 5.0.57 (checked
+     2026-10-07). Push master: the first "Publish Kodi repository" run requests the Pages build.
+     Without CI: Settings -> Pages, or `gh api -X POST repos/cahitcangulec/candre/pages/builds`.
+     Confirm that the live addons.xml shows 5.0.58 before the user tests.
    - Install 5.0.58. The version change purges stale negatives by itself; kodi.log shows
      `Clearing uncached debrid hashes on Prism version change` and `DebridCache: Cleared N uncached entries`.
      Alternatively use Tools -> Clear Local Torrent Cache.
@@ -86,13 +102,21 @@ https://github.com/cahitcangulec/candre.
    unavailable are still stored "False" for 4 h. If users report false "uncached" results,
    consider a shorter negative TTL, or offering DMM-negative RD hashes as unverified too.
 
-### Release flow
-1. Bump the version in `plugin.video.prism/addon.xml`.
+### Release flow (automatic since 2026-10-07)
+1. Bump the version in `plugin.video.prism/addon.xml` (or `context.prism/` / `repository.candre/`).
 2. Add a block at the top of `plugin.video.prism/changelog.txt`.
-3. Commit on master.
-4. `python tools/build_repo.py . <gh-pages worktree>`.
-5. Commit on gh-pages.
-6. Push both branches (commands below).
+3. Commit on master and push master (`git push origin master`). Nothing else.
+4. CI (`.github/workflows/publish-repo.yml`) checks out gh-pages in a worktree and runs
+   `tools/build_repo.py . <worktree> HEAD --reuse-zips <worktree>`. If the tree changed, CI commits
+   "Publish <addon> <version>" on gh-pages as github-actions[bot] and pushes it. If GitHub Pages
+   is not serving the gh-pages tip, CI requests a Pages build.
+5. Kodi installs with `repository.candre` see the new addons.xml.md5 and update by themselves.
+- Code pushed without a version bump is **not** published: the published zip for a version never
+  changes, and the run shows a warning annotation. Bump the version to release.
+- Manual run: GitHub -> Actions -> "Publish Kodi repository" -> Run workflow (master only).
+- A run fails if gh-pages moved during the run (non-fast-forward push). Re-run it.
+- Fallback without CI: build into the local gh-pages worktree, commit and push gh-pages (commands
+  below). Fast-forward the worktree to origin/gh-pages first, because CI commits there.
 
 ---
 
@@ -140,10 +164,13 @@ https://github.com/cahitcangulec/candre.
 
 ```bash
 python -m py_compile plugin.video.prism/resources/lib/modules/getSources.py   # syntax check (delete __pycache__ after)
-git worktree add ../candre-pages gh-pages                                    # once, for publishing
-python tools/build_repo.py . ../candre-pages master                          # regenerate zips + addons.xml + md5
+git push origin master                                                       # release: CI rebuilds + pushes gh-pages
+# fallback only (CI down): manual publish from a local gh-pages worktree
+git worktree add ../candre-pages gh-pages                                    # once
+git fetch origin && git -C ../candre-pages merge --ff-only origin/gh-pages   # take CI's commits first
+python tools/build_repo.py . ../candre-pages master --reuse-zips ../candre-pages  # regenerate gh-pages
 git -C ../candre-pages add -A && git -C ../candre-pages commit -m "Publish ..."
-git push origin master gh-pages
+git push origin gh-pages
 openwolf scan && openwolf status                                             # refresh the project index
 ```
 
