@@ -47,6 +47,12 @@ from resources.lib.modules.source_sorter import SourceSorter
 approved_qualities = ["4K", "1080p", "720p", "SD"]
 approved_qualities_set = set(approved_qualities)
 
+# Torrentio streams fetched with a debrid key (a4kScrapers torrentio given ``apikeys``) have no
+# infoHash, only a resolve URL that embeds the key: /resolve/<service>/<key>/<infoHash>/...
+_DEBRID_RESOLVE_URL = re.compile(r"/resolve/[^/]+/[^/]+/([a-fA-F0-9]{40})(?:/|$)")
+# Scraper flags for "cached on that debrid" (a4kScrapers sets debrid='RD' for Torrentio "[RD+]").
+_SCRAPER_CACHE_MARKERS = ("debrid", "rd_cached")
+
 
 class Sources:
     """
@@ -100,6 +106,8 @@ class Sources:
                 "remainingProviders": [],
             },
         }
+
+        self.rd_cache_summary = RdCacheSummary()
 
         self.hoster_domains = {}
         self.progress = 0
@@ -328,6 +336,7 @@ class Sources:
     def _finalise_results(self):
         monkey_requests.allow_provider_requests = False
         self._send_provider_stop_event()
+        self.rd_cache_summary.log()
 
         uncached = [
             i
@@ -415,6 +424,12 @@ class Sources:
     def _store_torrent_results(self, torrent_list):
         if len(torrent_list) == 0:
             return
+        # Scraper cache markers describe the debrid cache at scrape time. The local torrent cache
+        # replays torrents for two weeks, so replayed torrents are checked again instead.
+        torrent_list = [
+            {key: value for key, value in torrent.items() if key not in _SCRAPER_CACHE_MARKERS}
+            for torrent in torrent_list
+        ]
         self.torrent_cache.add_torrent(self.item_information, torrent_list)
 
     def _clear_local_torrent_results(self):
@@ -562,6 +577,36 @@ class Sources:
 
         return hosters, torrent
 
+    @staticmethod
+    def _provider_apikeys():
+        """
+        Debrid keys for torrent providers that take ``apikeys`` (a4kScrapers), opt-in through
+        rd.scraperCachedOnly. With the RD key, a4k's torrentio asks Torrentio for its "[RD+]"
+        streams only and marks them debrid='RD', which the RD worker takes as verified cached;
+        releases Torrentio has not seen cached are not returned at all (often most of them for
+        anime and new episodes), hence off by default. Only RD: a4k would also pass 'pm'/'ad'
+        keys to Torrentio, but its per-service copies of one hash collapse into a single source
+        here (one marker wins), and Prism's PM/AD workers check those services themselves.
+        """
+        if not (
+            g.real_debrid_enabled()
+            and g.get_bool_setting('rd.torrents')
+            and g.get_bool_setting('rd.scraperCachedOnly')
+        ):
+            return {}
+        rd_token = (g.get_setting('rd.auth') or '').strip()
+        return {'rd': rd_token} if rd_token else {}
+
+    @staticmethod
+    def _call_provider(method, apikeys, *args, **kwargs):
+        """Call a provider's movie()/episode() with ``apikeys``; without them if it does not take the keyword."""
+        if apikeys:
+            try:
+                return method(*args, apikeys=apikeys, **kwargs)
+            except TypeError:
+                pass
+        return method(*args, **kwargs)
+
     def _exit_thread(self, provider_name):
         if provider_name in self.sources_information['statistics']['remainingProviders']:
             self.sources_information['statistics']['remainingProviders'].remove(provider_name)
@@ -581,16 +626,19 @@ class Sources:
                 return
 
             self.running_providers.append(provider_source)
+            apikeys = self._provider_apikeys() if provider_type == "torrentCache" else {}
 
             if self.media_type == g.MEDIA_EPISODE:
                 simple_info = self._build_simple_show_info(info)
 
-                results = provider_source.episode(simple_info, info)
+                results = self._call_provider(provider_source.episode, apikeys, simple_info, info)
             else:
                 simple_info = self._build_simple_movie_info(info)
 
                 try:
-                    results = provider_source.movie(
+                    results = self._call_provider(
+                        provider_source.movie,
+                        apikeys,
                         info['info']['title'],
                         str(info['info']['year']),
                         info['info'].get('imdb_id'),
@@ -598,8 +646,13 @@ class Sources:
                         info=info,
                     )
                 except TypeError:
-                    results = provider_source.movie(
-                        info['info']['title'], str(info['info']['year']), simple_info=simple_info, info=info
+                    results = self._call_provider(
+                        provider_source.movie,
+                        apikeys,
+                        info['info']['title'],
+                        str(info['info']['year']),
+                        simple_info=simple_info,
+                        info=info,
                     )
 
             if results is None:
@@ -649,8 +702,27 @@ class Sources:
         source["seeds"] = self._torrent_seeds(source)
         source["provider_imports"] = provider_module
         source["provider"] = source.get("provider_name_override", provider_name.upper())
-        source["hash"] = source.get("hash", self.hash_regex.findall(source["magnet"])[0]).lower()
+        source["hash"] = self._torrent_source_hash(source).lower()
         return source
+
+    def _torrent_source_hash(self, source):
+        """
+        Info hash of a scraped torrent ("" when there is none; the batch skips it). a4kScrapers
+        torrentio given ``apikeys`` returns Torrentio "[RD+]" streams without infoHash or magnet,
+        only a resolve URL (/resolve/realdebrid/<key>/<infoHash>/...): the hash is taken from it,
+        a magnet is built, and the URL is dropped because it embeds the user's debrid key (it
+        would end up in the torrent cache DB and in logged source dicts).
+        """
+        info_hash = source.get("hash") or ""
+        if not info_hash and source.get("magnet"):
+            info_hash = next(iter(self.hash_regex.findall(source["magnet"])), "")
+        resolve_url = _DEBRID_RESOLVE_URL.search(str(source.get("url") or ""))
+        if resolve_url:
+            source.pop("url", None)
+            info_hash = info_hash or resolve_url[1]
+        if info_hash and not source.get("magnet"):
+            source["magnet"] = f"magnet:?xt=urn:btih:{info_hash}"
+        return info_hash
 
     @staticmethod
     def _process_adaptive_source(source, provider_name, provider_module, info):
@@ -928,7 +1000,7 @@ class Sources:
         self.sources_information['statistics']['filtered']['torrentsCached'] = _get_quality_count_dict(
             filtered_cached
         )
-        # Unverified RD torrents (DMM gave no answer) may not be cached: they must not end the scrape early.
+        # Unverified RD torrents (no service confirmed them) may not be cached: they must not end the scrape early.
         self.sources_information['statistics']['filtered']['torrentsCachedVerified'] = _get_quality_count_dict(
             [source for source in filtered_cached if not source.get('unverified')]
         )
@@ -1259,6 +1331,66 @@ class Sources:
         return int(torrent['seeds'])
 
 
+class RdCacheSummary:
+    """
+    Per-scrape tally of the Real-Debrid cache check over all provider batches, logged once as
+    "RD cache summary: ..." so one kodi.log line shows which case a scrape hit. The per-service
+    counts overlap (one hash can be confirmed by several services); "torrentio" includes the
+    a4kScrapers "[RD+]" markers, "local" the debridCache hits. dmm_answered=X/Y: DMM answered
+    for X of the Y hashes sent to it.
+    """
+
+    _SERVICES = ("torrentio", "dmm", "comet", "aio", "local")
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._verified = set()
+        self._unverified = set()
+        self._dropped = set()
+        self._by_service = {service: set() for service in self._SERVICES}
+        self._reasons = {}
+        self._dmm_sent = set()
+        self._dmm_answered = set()
+
+    def add(self, verified=(), unverified=(), dropped=(), by_service=None, reason=None, dmm_sent=(), dmm_answered=()):
+        with self._lock:
+            self._verified.update(verified)
+            self._unverified.update(unverified)
+            self._dropped.update(dropped)
+            for service, hashes in (by_service or {}).items():
+                self._by_service.setdefault(service, set()).update(hashes)
+            if reason and unverified:
+                self._reasons.setdefault(reason, set()).update(unverified)
+            self._dmm_sent.update(dmm_sent)
+            self._dmm_answered.update(dmm_answered)
+
+    def line(self, rd_token=True):
+        with self._lock:
+            verified = set(self._verified)
+            unverified = self._unverified - verified
+            dropped = self._dropped - verified - unverified
+            if not (verified or unverified or dropped):
+                return None
+            services = " ".join(f"{name}={len(hashes & verified)}" for name, hashes in self._by_service.items())
+            reasons = sorted(
+                ((reason, len(hashes & unverified)) for reason, hashes in self._reasons.items()),
+                key=lambda item: -item[1],
+            )
+            reason = "; ".join(f"{text} ({count})" for text, count in reasons if count) or "none"
+            dmm = f"{len(self._dmm_answered & self._dmm_sent)}/{len(self._dmm_sent)}"
+        if not rd_token:
+            reason += "; no rd.auth: Torrentio/Comet/AIOStreams RD checks skipped"
+        return (
+            f"RD cache summary: verified={len(verified)} ({services}) unverified={len(unverified)} "
+            f"dropped={len(dropped)} dmm_answered={dmm} reason={reason}"
+        )
+
+    def log(self):
+        line = self.line(rd_token=bool(g.get_setting("rd.auth")))
+        if line:
+            g.log(line, "info")
+
+
 class TorrentCacheCheck:
     def __init__(self, scraper_class):
         self.premiumize_cached = []
@@ -1341,8 +1473,9 @@ class TorrentCacheCheck:
         Persist check results: hashes in ``cached_hashes_set`` as "True". Any other hash is
         stored "False" only when it was verifiably checked: every hash when ``checked_hashes``
         is None (the debrid's own hash-check API answered for the whole list), otherwise only
-        the hashes in ``checked_hashes`` (external RD/AD checks: the ones DMM answered for).
-        Never-checked hashes are not stored, so the next scrape checks them again.
+        the hashes in ``checked_hashes`` (AD: the ones DMM answered for; RD passes none, since
+        external answers only ever promote). Other hashes are not stored, so the next scrape
+        checks them again.
         """
         if not g.get_bool_setting("general.torrentCache"):
             return
@@ -1475,82 +1608,91 @@ class TorrentCacheCheck:
             g.log_stacktrace()
 
     def _realdebrid_worker(self, torrent_list, info):
+        summary = getattr(self.scraper_class, "rd_cache_summary", None) or RdCacheSummary()
         try:
             if not torrent_list:
                 return
 
             db_cached, unchecked = self._split_by_db_cache(torrent_list, "rd")
             confirmed = self._mark_confirmed_torrents(db_cached, {t["hash"] for t in db_cached}, "real_debrid")
+            by_service = {"local": set(confirmed), "torrentio": set()}
+            # Hashes with a live "False" debridCache row for RD stay hidden until it expires.
+            known = confirmed | {torrent["hash"].lower() for torrent in unchecked}
+            dropped = {torrent["hash"].lower() for torrent in torrent_list} - known
 
             needs_check = []
             for torrent in unchecked:
                 info_hash = torrent.get("hash", "").lower()
                 if torrent.get("rd_cached") or str(torrent.get("debrid", "")).upper() == "RD":
-                    # The scraper already reported it cached on Real-Debrid (e.g. Torrentio "[RD+]").
+                    # The scraper already reported it cached on Real-Debrid (a4kScrapers torrentio "[RD+]").
                     torrent["debrid_provider"] = "real_debrid"
                     self.store_torrent(torrent)
                     confirmed.add(info_hash)
+                    by_service["torrentio"].add(info_hash)
                 elif info_hash not in confirmed:
                     needs_check.append(torrent)
 
-            dmm_checked = set()
+            unverified, reason, dmm_sent, dmm_checked = set(), None, set(), set()
             if needs_check:
                 imdb, season, episode, extra_contexts = self._external_lookup(info)
                 if imdb or extra_contexts:
                     hash_list = [torrent["hash"].lower() for torrent in needs_check]
-                    ext_cached, success, dmm_checked = external_cache.check_rd_external(
-                        hash_list, imdb, season, episode, extra_contexts=extra_contexts
+                    by_checker = {}
+                    ext_cached, _success, dmm_checked = external_cache.check_rd_external(
+                        hash_list, imdb, season, episode, extra_contexts=extra_contexts, by_checker=by_checker
                     )
-                    if success is not False:
-                        confirmed |= self._mark_confirmed_torrents(needs_check, ext_cached, "real_debrid")
-                    elif success is False:
-                        rd_cached_set = self.rd_api.check_cache_batch(hash_list)
-                        if rd_cached_set:
-                            confirmed |= self._mark_confirmed_torrents(
-                                needs_check, rd_cached_set, "real_debrid"
-                            )
-                    self._offer_unanswered_rd_torrents(needs_check, confirmed, dmm_checked, imdb)
-                elif self._is_anime_episode(info):
-                    self._store_unverified_rd_torrents(needs_check)
+                    # Positive answers only: what no service lists stays unconfirmed, never "uncached".
+                    confirmed |= self._mark_confirmed_torrents(needs_check, ext_cached, "real_debrid")
+                    for checker, hashes in by_checker.items():
+                        service = "aio" if checker == "aiostreams" else checker
+                        by_service.setdefault(service, set()).update(hashes & set(hash_list))
+                    dmm_sent = set(hash_list) if imdb else set()
+                unverified, reason = self._offer_unconfirmed_rd_torrents(
+                    needs_check, confirmed, imdb, extra_contexts, dmm_checked
+                )
 
-            # Only DMM answers per hash; never persist hashes it did not answer for as "uncached".
-            self._write_cache_results(unchecked, confirmed, "rd", checked_hashes=dmm_checked)
+            # Only confirmed hashes are persisted ("True"). DMM's "not available" is no proof of
+            # "uncached" (crowd DB), so nothing is stored "False" from external answers.
+            self._write_cache_results(unchecked, confirmed, "rd", checked_hashes=())
+            summary.add(confirmed, unverified, dropped, by_service, reason, dmm_sent, dmm_checked)
         except Exception:
             g.log_stacktrace()
+            summary.add(dropped={str(torrent.get("hash", "")).lower() for torrent in torrent_list or ()})
 
-    def _offer_unanswered_rd_torrents(self, needs_check, confirmed, dmm_checked, imdb):
+    def _offer_unconfirmed_rd_torrents(self, needs_check, confirmed, imdb, extra_contexts, dmm_checked):
         """
-        Torrents no service confirmed and DMM (the only per-hash checker) did not answer for
-        (DMM unreachable, rate limited, or a Kitsu-only lookup) are unknown, not uncached.
-        Offer them unverified like Seren instead of hiding them.
+        Torrents no service confirmed are unknown, not uncached: DMM, Torrentio, Comet and
+        AIOStreams are crowd caches, so "not listed" proves nothing. Offer them unverified like
+        Seren instead of hiding them. Returns (offered hashes, reason).
         """
-        unanswered = [
-            torrent
-            for torrent in needs_check
-            if torrent.get("hash", "").lower() not in confirmed and torrent.get("hash", "").lower() not in dmm_checked
-        ]
-        if not unanswered:
-            return set()
-        if not imdb:
+        unconfirmed = [torrent for torrent in needs_check if torrent.get("hash", "").lower() not in confirmed]
+        if not unconfirmed:
+            return set(), None
+        level = "warning"
+        if not imdb and not extra_contexts:
+            reason = "no IMDb/Kitsu id for the cache check"
+        elif not imdb:
             reason = "no IMDb id for the DMM availability check (Kitsu-only lookup)"
         elif not dmm_checked:
             reason = "DMM availability check unreachable (no answer)"
-        else:
+        elif any(torrent.get("hash", "").lower() not in dmm_checked for torrent in unconfirmed):
             reason = f"DMM answered for only {len(dmm_checked)} of {len(needs_check)} hashes"
-        return self._store_unverified_rd_torrents(unanswered, reason)
+        else:
+            reason, level = "not listed as cached by DMM/Torrentio/Comet/AIOStreams", "debug"
+        return self._store_unverified_rd_torrents(unconfirmed, reason, level), reason
 
-    def _store_unverified_rd_torrents(self, torrent_list, reason="no IMDb/Kitsu id for anime episode"):
+    def _store_unverified_rd_torrents(self, torrent_list, reason="no IMDb/Kitsu id for anime episode", level="warning"):
         """
-        Torrents whose RD cache state could not be checked: an anime episode without any id the
-        external cache services understand (no IMDb, no MAL/AniList/Kitsu mapping), or DMM did
-        not answer. Offer the torrents as Real-Debrid sources like Seren does; the RD resolver
-        verifies on play (adds the magnet, plays only if RD reports it downloaded, otherwise
-        deletes it and moves on to the next source). They are never persisted as uncached.
+        Torrents whose RD cache state no service confirmed: no id the external cache services
+        understand, a check that got no answer, or a hash none of them lists. Offer the
+        torrents as Real-Debrid sources like Seren does; the RD resolver verifies on play (adds
+        the magnet, plays only if RD reports it downloaded, otherwise deletes it and moves on
+        to the next source). They are never persisted as uncached.
         """
         g.log(
             f"RD cache check: {reason}, offering {len(torrent_list)} "
             "torrents unverified (checked on play)",
-            "warning",
+            level,
         )
         stored = set()
         for torrent in torrent_list:

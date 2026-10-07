@@ -1,3 +1,16 @@
+Changelog 5.0.59
+[BUG] Real-Debrid: a source that turns out not to be cached on play is skipped silently and the next source is tried, like Seren (no more "select the file manually?" prompt for every uncached source, and answering Yes no longer stops the search)
+[BUG] Real-Debrid: the "select the file manually?" prompt now appears only for a cached torrent without a matching file, and at most once per play attempt
+[BUG] Real-Debrid: an uncached torrent is removed from your account without starting a download when RD has never seen it; a played torrent is deleted only after its link was unrestricted
+[BUG] Real-Debrid: the access token is refreshed only when RD rejects it (HTTP 401), not after every failed request; rate limits (429/509) skip the source
+[BUG] Real-Debrid: no more delete request for an empty torrent id when Auto Delete is off
+[CHANGE] Real-Debrid: cache hints from DMM, Torrentio and Comet only mark sources as cached; a release none of them lists stays in the list as "Unverified" instead of being hidden
+[CHANGE] Real-Debrid: what RD answered on play is remembered by the next scrape: a cached torrent shows as verified for 24 h, a torrent RD reported as not cached is hidden for 4 h
+[CHANGE] Real-Debrid: one play attempt tries at most 10 sources
+[CHANGE] Torrentio, Comet and AIOStreams cache checks use only your own Real-Debrid account; the built-in third-party Torrentio key was removed
+[FEATURE] New optional setting "Torrentio: list only releases cached on Real-Debrid" (off by default): a4kScrapers Torrentio then returns only releases it has seen cached, all shown as verified. It can remove most results for anime and new episodes; anime without an IMDb id gets no Torrentio results either way
+[CHANGE] kodi.log: one "RD cache summary" line per scrape shows how many Real-Debrid sources were verified, unverified or hidden, and why
+
 Changelog 5.0.58
 [BUG] Real-Debrid/AllDebrid: restore DMM cache detection for all movies and TV (DMM moved to server-issued challenge tokens on 2026-08-31, every check returned 403)
 [BUG] Real-Debrid/AllDebrid: failed or unanswered cache checks are no longer saved as uncached for 4 hours

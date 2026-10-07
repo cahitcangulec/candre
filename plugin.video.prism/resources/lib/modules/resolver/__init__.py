@@ -17,6 +17,7 @@ from resources.lib.debrid.offcloud import OffCloud
 from resources.lib.debrid.torbox import TorBox
 from resources.lib.modules.exceptions import FileIdentification
 from resources.lib.modules.exceptions import ResolverFailure
+from resources.lib.modules.exceptions import TorrentNotCached
 from resources.lib.modules.exceptions import UnexpectedResponse
 from resources.lib.modules.exceptions import NoFileSelectionAvailable
 from resources.lib.modules.exceptions import UserCancelledSelection
@@ -26,6 +27,10 @@ from resources.lib.modules.resolver.torrent_resolvers import PremiumizeResolver
 from resources.lib.modules.resolver.torrent_resolvers import RealDebridResolver
 from resources.lib.modules.resolver.torrent_resolvers import OffCloudResolver
 from resources.lib.modules.resolver.torrent_resolvers import TorBoxResolver
+
+# Sources tried per play attempt (click or auto-play). An uncached Real-Debrid torrent costs about
+# 3-6 API calls (add, info, select, info, delete), so this bounds one attempt to roughly 60 calls.
+MAX_RESOLVE_ATTEMPTS = 10
 
 
 class Resolver:
@@ -39,6 +44,7 @@ class Resolver:
         self.torrent_resolve_failure_style = g.get_int_setting('general.resolvefailurehandling')
         sys.path.append(g.ADDON_USERDATA_PATH)
         self.return_data = None
+        self.manual_prompt_shown = False
         self.resolvers = {
             "all_debrid": AllDebridResolver,
             "premiumize": PremiumizeResolver,
@@ -58,23 +64,14 @@ class Resolver:
         stream_link = None
         release_title = None
         resolved_source = None
+        tried = 0
 
-        manual_prompt_shown = False
-        for source in sources:
+        for source in sources[:MAX_RESOLVE_ATTEMPTS]:
+            tried += 1
             try:
-                allow_manual_prompt = not manual_prompt_shown
                 stream_link, release_title = self.resolve_single_source(
-                    source, item_information, pack_select, silent, allow_manual_prompt=allow_manual_prompt
+                    source, item_information, pack_select, silent
                 )
-                if (
-                    not stream_link
-                    and source.get("type") == "torrent"
-                    and self.torrent_resolve_failure_style == 1
-                    and not pack_select
-                    and not silent
-                    and allow_manual_prompt
-                ):
-                    manual_prompt_shown = True
                 if stream_link:
                     resolved_source = source
                     break
@@ -84,6 +81,8 @@ class Resolver:
                 g.log_stacktrace()
                 continue
 
+        if not stream_link:
+            g.log(f"Resolver: none of the {tried} tried sources could be resolved", "info")
         return stream_link, release_title, resolved_source
 
     def resolve_single_source(self, source, item_information, pack_select=False, silent=False, allow_manual_prompt=True):
@@ -110,20 +109,28 @@ class Resolver:
                     pack_select,
                 )
 
+                # Reached only when the torrent is cached but no file matched: an uncached torrent
+                # raises TorrentNotCached and is skipped. Ask at most once per play attempt.
                 if (
                     not stream_link
                     and self.torrent_resolve_failure_style == 1
                     and not pack_select
                     and not silent
                     and allow_manual_prompt
-                    and xbmcgui.Dialog().yesno(g.ADDON_NAME, g.get_language_string(30490))
+                    and not self.manual_prompt_shown
                 ):
-                    stream_link = self._resolve_debrid_source(
-                        self.resolvers[source["debrid_provider"]],
-                        source,
-                        item_information,
-                        True,
-                    )
+                    self.manual_prompt_shown = True
+                    if xbmcgui.Dialog().yesno(g.ADDON_NAME, g.get_language_string(30490)):
+                        try:
+                            stream_link = self._resolve_debrid_source(
+                                self.resolvers[source["debrid_provider"]],
+                                source,
+                                item_information,
+                                True,
+                            )
+                        except NoFileSelectionAvailable:
+                            # Nothing to pick in this torrent: move on to the next source
+                            stream_link = None
 
             elif source["type"] in ["hoster", "cloud"]:
                 stream_link = self._resolve_hoster_or_cloud(source, item_information)
@@ -134,6 +141,9 @@ class Resolver:
             return None, None
         except (UserCancelledSelection, NoFileSelectionAvailable):
             raise
+        except TorrentNotCached as e:
+            g.log(f"Skipping source, not playable on {source.get('debrid_provider')} now: {e}", "debug")
+            return None, None
         except ResolverFailure as e:
             g.log(f'Failed to resolve source: {e}')
             return None, None
@@ -272,13 +282,16 @@ class Resolver:
         if source["type"] == "torrent":
             try:
                 stream_link = api.resolve_magnet(item_information, source, pack_select)
-            except (UserCancelledSelection, NoFileSelectionAvailable):
+            except (UserCancelledSelection, NoFileSelectionAvailable, ResolverFailure):
                 raise
-            except (UnexpectedResponse, FileIdentification) as e:
+            except FileIdentification as e:
+                # Cached torrent, but no file matched: the caller may offer manual file selection
                 g.log(e, "error")
                 return None
             except Exception as e:
+                # Debrid error (upload, unrestrict, request): skip the source without the manual prompt
                 g.log(f"Failing Magnet: {source['magnet']}")
+                raise ResolverFailure(source) from e
         elif source["type"] in ["hoster", "cloud"]:
             try:
                 stream_link = api.resolve_stream_url({"link": source["url"]})

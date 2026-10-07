@@ -9,6 +9,7 @@ from resources.lib.common import tools
 from resources.lib.database.cache import use_cache
 from resources.lib.database.keys import get_client_id
 from resources.lib.modules.exceptions import RanOnceAlready
+from resources.lib.modules.exceptions import TorrentNotCached
 from resources.lib.modules.exceptions import UnexpectedResponse
 from resources.lib.modules.global_lock import GlobalLock
 from resources.lib.modules.globals import g
@@ -22,6 +23,19 @@ RD_SECRET_KEY = "rd.secret"
 RD_CLIENT_ID_KEY = "rd.client_id"
 RD_USERNAME_KEY = "rd.username"
 
+# Resolve-time cache probe (check_hash). RD has no cache API any more: add the magnet, select the
+# video files and accept the torrent only when RD reports it "downloaded".
+RD_PROBE_RECHECK_STATUSES = ("waiting_files_selection", "queued", "magnet_conversion")
+RD_PROBE_RECHECK_DELAY = 1.5
+RD_PROBE_FAILED_STATUSES = ("magnet_error", "error", "virus", "dead")
+# RD limits: the hash state is unknown, so these are never stored as "not cached"
+RD_PROBE_LIMIT_ERRORS = {
+    429: "rate limited",
+    451: "infringing file or add pause",
+    503: "service unavailable",
+    509: "active downloads limit",
+}
+
 
 class RealDebrid:
     def __init__(self):
@@ -34,6 +48,7 @@ class RealDebrid:
         self.oauth_time_step = 0
         self.base_url = "https://api.real-debrid.com/rest/1.0/"
         self.cache_check_results = {}
+        self.last_status_code = None
         self._load_settings()
 
     @cached_property
@@ -157,6 +172,7 @@ class RealDebrid:
         g.log(response.request.url)
 
     def _is_response_ok(self, response):
+        self.last_status_code = response.status_code
         if response.ok:
             return True
         self._handle_error(response)
@@ -209,7 +225,7 @@ class RealDebrid:
             return None
 
         response = self.session.post(url, data=post_data, headers=self._get_headers(), timeout=10)
-        if not self._is_response_ok(response) and not fail_check:
+        if not self._is_response_ok(response) and not fail_check and response.status_code == 401:
             self.try_refresh_token(True)
             response = self.post_url(original_url, post_data, fail_check=True)
         try:
@@ -226,7 +242,7 @@ class RealDebrid:
 
         response = self.session.get(url, headers=self._get_headers(), timeout=10)
 
-        if not self._is_response_ok(response) and not fail_check:
+        if not self._is_response_ok(response) and not fail_check and response.status_code == 401:
             self.try_refresh_token(True)
             response = self.get_url(original_url, fail_check=True)
         try:
@@ -243,7 +259,7 @@ class RealDebrid:
 
         response = self.session.delete(url, headers=self._get_headers(), timeout=10)
 
-        if not self._is_response_ok(response) and not fail_check:
+        if not self._is_response_ok(response) and not fail_check and response.status_code == 401:
             self.try_refresh_token(True)
             response = self.delete_url(original_url, fail_check=True)
         try:
@@ -251,87 +267,103 @@ class RealDebrid:
         except (ValueError, AttributeError):
             return response
 
-    def _get_url_no_refresh(self, url):
-        """GET without token refresh — used for deprecated instantAvailability."""
-        if not self.token:
-            return None
-        try:
-            response = self.session.get(
-                self.base_url + url,
-                headers=self._get_headers(),
-                timeout=10,
-            )
-            if response.status_code in (403, 429):
-                return {"_rd_status": response.status_code}
-            if not response.ok:
-                g.log(f"RD instantAvailability HTTP {response.status_code}", "warning")
-                return None
-            return response.json()
-        except Exception as exc:
-            g.log(f"RD instantAvailability request error: {exc}", "warning")
-            return None
-
-    def check_cache_batch(self, hash_list):
-        cached_hashes = set()
-        chunk_size = 50
-        for index in range(0, len(hash_list), chunk_size):
-            chunk = hash_list[index:index + chunk_size]
-            hash_string = "/" + "/".join(chunk)
-            try:
-                response = self._get_url_no_refresh(f"torrents/instantAvailability{hash_string}")
-                if response is None:
-                    continue
-                if isinstance(response, dict) and "_rd_status" in response:
-                    status = response["_rd_status"]
-                    g.log(
-                        f"RD instantAvailability: HTTP {status} — stopping chunk loop.",
-                        "warning",
-                    )
-                    break
-                if not isinstance(response, dict):
-                    continue
-                for info_hash, info in response.items():
-                    if isinstance(info, dict) and info.get("rd"):
-                        cached_hashes.add(info_hash.lower())
-            except Exception as exc:
-                g.log(f"RD instantAvailability chunk error: {exc}", "warning")
-            if index + chunk_size < len(hash_list):
-                time.sleep(0.2)
-        return cached_hashes
-        
-    def check_hash(self, hash_value):
+    def check_hash(self, hash_value, keep_torrent=False):
+        """
+        Probe whether Real-Debrid can stream the torrent right now (RD has no cache API any more):
+        addMagnet, read the info, select the video files, read the info again (one re-check after
+        RD_PROBE_RECHECK_DELAY seconds while RD is still converting or queueing). Only status
+        "downloaded" counts as cached; a torrent that is not cached is deleted again.
+        :param hash_value: info hash
+        :param keep_torrent: True leaves a cached torrent in the account so the caller can unrestrict
+            its link before deleting it; False deletes it here when rd.autodelete is on
+        :return: {hash_value: {"torrent_id", "torrent_info", "rd"}} for a cached torrent
+        :raises TorrentNotCached: not cached (persist=True), or the probe could not tell because RD
+            refused a request (429/451/503/509 limits, other errors) or the request failed (persist=False)
+        """
         magnet = f'magnet:?xt=urn:btih:{hash_value}'
-        response = self.add_magnet(magnet)
-
-        if 'id' not in response:
-            return {}
+        self.last_status_code = None
+        try:
+            response = self.add_magnet(magnet)
+        except Exception as e:
+            raise TorrentNotCached(hash_value, f"addMagnet request failed: {e}", persist=False) from e
+        if not isinstance(response, dict) or 'id' not in response:
+            raise self._probe_failure(hash_value, "addMagnet", response)
 
         torrent_id = response['id']
-        self.torrent_select_all(torrent_id)
-        torrent_info = self.torrent_info(torrent_id)
+        try:
+            torrent_info = self._probe_info(hash_value, torrent_id)
+            status = torrent_info.get('status')
+            if status == 'magnet_conversion' or status in RD_PROBE_FAILED_STATUSES:
+                # Right after the add, magnet_conversion means RD has never seen this hash.
+                # Delete without selecting files so no download is started.
+                raise TorrentNotCached(hash_value, f"status {status} after addMagnet")
+
+            self.last_status_code = None
+            self.torrent_select_all(torrent_id, torrent_info)
+            if not self.last_status_code or not 200 <= self.last_status_code < 300:
+                raise self._probe_failure(hash_value, "selectFiles", None)
+
+            torrent_info = self._probe_info(hash_value, torrent_id)
+            if torrent_info.get('status') in RD_PROBE_RECHECK_STATUSES:
+                g.wait_for_abort(RD_PROBE_RECHECK_DELAY)
+                torrent_info = self._probe_info(hash_value, torrent_id)
+            status = torrent_info.get('status')
+            if status != 'downloaded':
+                raise TorrentNotCached(hash_value, f"status {status}")
+        except TorrentNotCached:
+            self._delete_probe_torrent(torrent_id)
+            raise
+        except Exception as e:
+            self._delete_probe_torrent(torrent_id)
+            raise TorrentNotCached(hash_value, f"probe request failed: {e}", persist=False) from e
 
         if "files" in torrent_info:
             torrent_info["files"] = [file for file in torrent_info["files"] if 'sample' not in file['path'].lower() and source_utils.is_file_ext_valid(file["path"])]
 
-        if torrent_info.get('status') == 'downloaded':
-            hash_dict = {
-                hash_value: {"torrent_id": torrent_id, "torrent_info": torrent_info, 'rd': [
-                    {str(file['id']): {'filename': file['path'], 'filesize': file['bytes']}}
-                    for file in torrent_info.get('files', []) if file.get('selected') == 1
-                ]}
-            }
+        hash_dict = {
+            hash_value: {"torrent_id": torrent_id, "torrent_info": torrent_info, 'rd': [
+                {str(file['id']): {'filename': file['path'], 'filesize': file['bytes']}}
+                for file in torrent_info.get('files', []) if file.get('selected') == 1
+            ]}
+        }
 
-            if g.get_bool_setting("rd.autodelete"):
-                self.delete_torrent(torrent_id)
-        else:
+        if not keep_torrent and g.get_bool_setting("rd.autodelete"):
             self.delete_torrent(torrent_id)
-            hash_dict = {}
 
         return hash_dict
 
-    def torrent_select_all(self, torrent_id):
+    def _probe_info(self, hash_value, torrent_id):
+        self.last_status_code = None
+        torrent_info = self.torrent_info(torrent_id)
+        if not isinstance(torrent_info, dict) or "status" not in torrent_info:
+            raise self._probe_failure(hash_value, "torrents/info", torrent_info)
+        return torrent_info
+
+    def _probe_failure(self, hash_value, step, response):
+        """
+        TorrentNotCached for a probe request RD refused or did not answer. The hash state is unknown,
+        so it is never persisted as uncached. 451 (infringing_file) is not persisted either: RD also
+        answers 451 while it pauses adds on the account, which says nothing about the hash.
+        """
+        code = self.last_status_code
+        limit = RD_PROBE_LIMIT_ERRORS.get(code)
+        if limit:
+            g.log(f"RD probe {step} for {hash_value}: HTTP {code} ({limit}), skipping source", "warning")
+            reason = f"{step} HTTP {code} ({limit})"
+        else:
+            reason = f"{step} failed (HTTP {code}): {response}"
+        return TorrentNotCached(hash_value, reason, persist=False)
+
+    def _delete_probe_torrent(self, torrent_id):
         try:
-            torrent_info = self.torrent_info(torrent_id)
+            self.delete_torrent(torrent_id)
+        except Exception as e:
+            g.log(f"RD probe: could not delete torrent {torrent_id}: {e}", "warning")
+
+    def torrent_select_all(self, torrent_id, torrent_info=None):
+        try:
+            if torrent_info is None:
+                torrent_info = self.torrent_info(torrent_id)
             files = torrent_info.get('files', [])
             
             valid_file_ids = [
@@ -378,6 +410,9 @@ class RealDebrid:
             raise UnexpectedResponse(response) from e
 
     def delete_torrent(self, id):
+        if not id:
+            g.log("Real Debrid: no torrent id to delete, skipping", "debug")
+            return
         url = f"torrents/delete/{id}"
         self.delete_url(url)
 

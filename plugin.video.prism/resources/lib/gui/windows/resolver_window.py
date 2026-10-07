@@ -6,6 +6,7 @@ from resources.lib.gui.windows.single_item_window import SingleItemWindow
 from resources.lib.modules.exceptions import NoFileSelectionAvailable
 from resources.lib.modules.exceptions import UserCancelledSelection
 from resources.lib.modules.globals import g
+from resources.lib.modules.resolver import MAX_RESOLVE_ATTEMPTS
 from resources.lib.modules.resolver import Resolver
 
 
@@ -60,12 +61,15 @@ class ResolverWindow(SingleItemWindow):
     def _resolve_source(self):
         stream_link = None
         release_title = None
-        total = len(self.sources)
+        sources = self.sources[:MAX_RESOLVE_ATTEMPTS]
+        total = len(sources)
+        tried = 0
 
         try:
-            for index, source in enumerate(self.sources, start=1):
+            for index, source in enumerate(sources, start=1):
                 if self.canceled:
                     return None, None
+                tried = index
                 self._update_window_properties(source)
                 provider = source.get("debrid_provider") or source.get("provider") or "source"
                 self.setProperty(
@@ -85,6 +89,7 @@ class ResolverWindow(SingleItemWindow):
                     g.log_stacktrace()
                     continue
             if stream_link is None:
+                g.log(f"Resolver: none of the {tried} tried sources could be resolved", "info")
                 self.return_data = None, None
             else:
                 self.return_data = stream_link, release_title

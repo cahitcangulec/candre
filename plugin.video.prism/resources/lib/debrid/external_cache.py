@@ -7,10 +7,13 @@ AD: DMM /availability/ad/check + Torrentio + AIOStreams + Comet (service-scoped)
 Hash results are unioned per debrid. Callers match any scraped torrent hash
 (nyaa, torrentio, etc.) against the confirmed set.
 
-DMM is the only hash-list authoritative service: it answers available / not available for
-every hash it is sent. Torrentio, Comet and AIOStreams only list hashes from their own
-caches, so a hash missing there is no evidence that it is uncached. check_rd_external and
-check_ad_external therefore also return the hashes DMM actually answered for.
+DMM is the only service that answers available / not available for every hash it is sent.
+Torrentio, Comet and AIOStreams only list hashes from their own caches, so a hash missing
+there is no evidence that it is uncached. DMM is a crowd DB as well, so its "not available"
+is no proof either: callers use these answers only to promote a hash to cached, never to
+hide one. check_rd_external and check_ad_external also return the hashes DMM answered for.
+
+Torrentio / Comet / AIOStreams RD checks run only with the user's own RD token (rd.auth).
 
 Every checker returns None when it got no usable answer (exception, non-2xx, error-only
 response) and a set (possibly empty) only for a real answer.
@@ -45,7 +48,6 @@ _BROWSER_UAS = [
 _session = None
 
 _TIO_BASE = "https://torrentio.strem.fun"
-_TIO_FALLBACK_PARAM = "realdebrid=T2iZoymNCCD1T5c2sX5u8tIZVcgcFWlCsCJ72rCmrU2mDdmvgieM"
 _TIO_OPTIONS = "debridoptions=nodownloadlinks,nocatalog"
 _HASH_PATTERN = re.compile(r"\b[a-fA-F0-9]{40}\b")
 _TIO_TIMEOUT = 8
@@ -54,6 +56,7 @@ _TIO_SERVICE_PARAM = {"rd": "realdebrid", "ad": "alldebrid"}
 _DMM_URL_RD = "https://debridmediamanager.com/api/availability/check"
 _DMM_URL_AD = "https://debridmediamanager.com/api/availability/ad/check"
 _DMM_CHALLENGE_URL = "https://debridmediamanager.com/api/challenge"
+_DMM_ORIGIN = "https://debridmediamanager.com"
 _DMM_TIMEOUT = 8
 # DMM mints availability tokens server-side (GET /api/challenge -> {token, hash}, 5 min
 # server TTL, IP rate limited). Its own web client reuses a token for 2 min; stay below that.
@@ -254,13 +257,11 @@ def _extract_hashes_from_streams(streams):
 
 
 def _get_torrentio_debrid_param(service, debrid_key):
-    svc = (service or "rd").lower()
-    if debrid_key:
-        param_name = _TIO_SERVICE_PARAM.get(svc, "realdebrid")
-        return f"{param_name}={debrid_key}"
-    if svc == "rd":
-        return _TIO_FALLBACK_PARAM
-    return None
+    """Torrentio config for the user's own debrid key; None without one (the check is skipped)."""
+    if not debrid_key:
+        return None
+    param_name = _TIO_SERVICE_PARAM.get((service or "rd").lower(), "realdebrid")
+    return f"{param_name}={debrid_key}"
 
 
 def torrentio_check_cache(imdb, season, episode, service="rd", debrid_key=None):
@@ -324,7 +325,7 @@ def _dmm_get_challenge(force=False, failed_token=None):
         if now < _dmm_challenge_failed_until:
             raise RuntimeError("DMM challenge failed recently, not retrying yet")
         try:
-            resp = _get_session().get(_DMM_CHALLENGE_URL, timeout=_DMM_TIMEOUT)
+            resp = _get_session().get(_DMM_CHALLENGE_URL, headers={"Referer": f"{_DMM_ORIGIN}/"}, timeout=_DMM_TIMEOUT)
             resp.raise_for_status()
             payload = resp.json()
             token = payload.get("token") if isinstance(payload, dict) else None
@@ -338,12 +339,15 @@ def _dmm_get_challenge(force=False, failed_token=None):
         return token, signature
 
 
-def _dmm_post_chunk(url, imdb, chunk):
+def _dmm_post_chunk(url, imdb, chunk, season=None):
     """Lowercase hashes DMM reports available among ``chunk``. Raises when DMM did not answer."""
+    # The headers DMM's own web client sends from the title page (POV sends the same Referer).
+    page = "show" if season is not None and str(season).isdigit() else "movie"
+    headers = {"Referer": f"{_DMM_ORIGIN}/{page}/{imdb}", "Origin": _DMM_ORIGIN}
 
     def post(token, signature):
         payload = {"dmmProblemKey": token, "solution": signature, "imdbId": imdb, "hashes": chunk}
-        return _get_session().post(url, json=payload, timeout=_DMM_TIMEOUT)
+        return _get_session().post(url, json=payload, headers=headers, timeout=_DMM_TIMEOUT)
 
     token, signature = _dmm_get_challenge()
     resp = post(token, signature)
@@ -362,7 +366,7 @@ def _dmm_post_chunk(url, imdb, chunk):
     }
 
 
-def _dmm_check(hashes, imdb, service):
+def _dmm_check(hashes, imdb, service, season=None):
     """
     Ask DMM which ``hashes`` are available on RD (service "rd") or AD ("ad") for ``imdb``.
     Hashes go out in chunks of _DMM_CHUNK_SIZE; answers are memoised for _MEMO_TTL_SECONDS.
@@ -393,7 +397,7 @@ def _dmm_check(hashes, imdb, service):
     for index in range(0, len(pending), _DMM_CHUNK_SIZE):
         chunk = pending[index:index + _DMM_CHUNK_SIZE]
         try:
-            available = _dmm_post_chunk(url, imdb, chunk)
+            available = _dmm_post_chunk(url, imdb, chunk, season)
         except Exception as exc:
             g.log(f"ExternalCache: DMM {label} check failed: {_describe_error(exc)}", "warning")
             break  # the remaining chunks would fail the same way
@@ -551,12 +555,13 @@ def comet_check_cache(imdb, season, episode, api_key=None, service="ad"):
     return None
 
 
-def _run_parallel_checks(futures_map, label, timeout=12):
+def _run_parallel_checks(futures_map, label, timeout=12, by_checker=None):
     """
     Run the checkers in parallel. Returns (cached, success, dmm_checked):
     success is True when something is cached, None when at least one checker gave a real
     answer but nothing is cached, False when no checker gave a usable answer (all None or
-    raised). dmm_checked holds the hashes DMM answered for.
+    raised). dmm_checked holds the hashes DMM answered for. ``by_checker`` (optional dict)
+    receives {checker: cached hashes} for every checker that answered ("dmm", "torrentio", ...).
     """
     all_cached = set()
     dmm_checked = set()
@@ -582,6 +587,10 @@ def _run_parallel_checks(futures_map, label, timeout=12):
             dmm_checked.update(result.checked)
         else:
             all_cached.update(result)
+        if by_checker is not None:
+            by_checker.setdefault(name.split(" ", 1)[0], set()).update(
+                result.cached if isinstance(result, _DmmAnswer) else result
+            )
 
     if all_cached:
         return all_cached, True, dmm_checked
@@ -598,7 +607,10 @@ def _memoised_future(checker, service, media_id, season, episode, key, call):
 def _rd_check_futures(hash_list, imdb, season, episode, rd_token, label=""):
     futures_map = {}
     if not str(imdb).startswith(_KITSU_PREFIX):
-        futures_map[f"dmm{label}"] = lambda: _dmm_check(hash_list, imdb, "rd")
+        futures_map[f"dmm{label}"] = lambda: _dmm_check(hash_list, imdb, "rd", season)
+    if not rd_token:
+        # Torrentio / Comet / AIOStreams need an RD key: never borrow someone else's.
+        return futures_map
     ctx = ("rd", imdb, season, episode, rd_token)
     futures_map[f"torrentio{label}"] = _memoised_future(
         "torrentio", *ctx, lambda: torrentio_check_cache(imdb, season, episode, "rd", rd_token)
@@ -606,10 +618,9 @@ def _rd_check_futures(hash_list, imdb, season, episode, rd_token, label=""):
     futures_map[f"comet{label}"] = _memoised_future(
         "comet", *ctx, lambda: comet_check_cache(imdb, season, episode, rd_token, "rd")
     )
-    if rd_token:
-        futures_map[f"aiostreams{label}"] = _memoised_future(
-            "aiostreams", *ctx, lambda: aio_check_cache(imdb, season, episode, "rd", rd_token)
-        )
+    futures_map[f"aiostreams{label}"] = _memoised_future(
+        "aiostreams", *ctx, lambda: aio_check_cache(imdb, season, episode, "rd", rd_token)
+    )
     return futures_map
 
 
@@ -646,22 +657,25 @@ def _refresh_rd_token_if_expired():
             g.log(f"ExternalCache RD: token refresh failed: {_describe_error(exc)}", "warning")
 
 
-def check_rd_external(hash_list, imdb, season, episode, extra_contexts=None):
+def check_rd_external(hash_list, imdb, season, episode, extra_contexts=None, by_checker=None):
     """
     :param extra_contexts: optional extra (media_id, season, episode) lookups unioned with
         the IMDb one, e.g. ``("kitsu:46474", None, "5")`` for anime episodes.
+    :param by_checker: optional dict, filled with {checker: cached hashes} per answering checker.
     :return: (cached_hashes, success, dmm_checked_hashes), all hashes lowercase.
         success: True = something cached, None = answered but nothing cached, False = no
-        service answered. dmm_checked_hashes: the hashes DMM answered for; only these are
-        verified, any other hash missing from cached_hashes is merely unconfirmed.
+        service answered. dmm_checked_hashes: the hashes DMM answered for. Only cached_hashes
+        is a signal; a hash missing from it is merely unconfirmed, even when DMM answered for it.
     """
     _refresh_rd_token_if_expired()
     rd_token = g.get_setting("rd.auth")
+    if not rd_token:
+        g.log("ExternalCache RD: no rd.auth token, Torrentio/Comet/AIOStreams checks skipped", "debug")
     futures_map = _rd_check_futures(hash_list, imdb, season, episode, rd_token) if imdb else {}
     futures_map.update(_extra_context_futures(_rd_check_futures, hash_list, extra_contexts, rd_token))
     if not futures_map:
         return set(), False, set()
-    cached, success, dmm_checked = _run_parallel_checks(futures_map, "RD")
+    cached, success, dmm_checked = _run_parallel_checks(futures_map, "RD", by_checker=by_checker)
     g.log(
         f"ExternalCache RD: {len(cached)} total cached hashes "
         f"(DMM answered for {len(dmm_checked)} of {len(hash_list)})",
@@ -695,7 +709,7 @@ def prime_ad_cache_checker_devices():
 def _ad_check_futures(hash_list, imdb, season, episode, ad_key, label=""):
     futures_map = {}
     if not str(imdb).startswith(_KITSU_PREFIX):
-        futures_map[f"dmm{label}"] = lambda: _dmm_check(hash_list, imdb, "ad")
+        futures_map[f"dmm{label}"] = lambda: _dmm_check(hash_list, imdb, "ad", season)
     ctx = ("ad", imdb, season, episode, ad_key)
     futures_map[f"torrentio{label}"] = _memoised_future(
         "torrentio", *ctx, lambda: torrentio_check_cache(imdb, season, episode, "ad", ad_key)

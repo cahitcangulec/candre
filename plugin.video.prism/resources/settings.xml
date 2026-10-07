@@ -1565,6 +1565,16 @@
 					</dependencies>
 					<control type="toggle"/>
 				</setting>
+				<setting id="rd.scraperCachedOnly" type="boolean" label="31140" help="31141" parent="">
+					<level>0</level>
+					<default>false</default>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="realdebrid.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="toggle"/>
+				</setting>
 			</group>
 			<group id="6" label="30333">
 				<setting id="alldebrid.enabled" type="boolean" label="30335" help="">

@@ -678,10 +678,19 @@ def md5_hash(value):
     return hashlib.md5(str(value).encode("utf-8")).hexdigest()
 
 
+# Debrid keys in Stremio-style addon URLs (Torrentio config "realdebrid=<key>", also URL-encoded).
+_PROVIDER_URL_DEBRID_KEY = re.compile(
+    r"((?:realdebrid|premiumize|alldebrid|debridlink|easydebrid|offcloud|torbox|putio)(?:=|%3D))[^|/&%\s]+",
+    re.IGNORECASE,
+)
+
+
 # Re-added for provider backwards compatibility support
 def log(msg, level):
     """
     Legacy compat method to log message
+    Providers log their request URLs here (a4kScrapers "GET: <url>"); those can carry the debrid
+    key Prism passes as ``apikeys``, so it is redacted.
     :param msg: Message to write to log
     :type msg: str
     :param level: Log level
@@ -691,6 +700,8 @@ def log(msg, level):
     """
     from resources.lib.modules.globals import g
 
+    if isinstance(msg, str):
+        msg = _PROVIDER_URL_DEBRID_KEY.sub(r"\1<redacted>", msg)
     g.log(msg, level)
 
 

@@ -5825,3 +5825,13 @@ msgstr "Nothing to continue watching right now"
 msgctxt "#31129"
 msgid "Unverified"
 msgstr "Unverified"
+
+#: /resources/settings.xml
+msgctxt "#31140"
+msgid "Torrentio: list only releases cached on Real-Debrid"
+msgstr "Torrentio: list only releases cached on Real-Debrid"
+
+#: /resources/settings.xml
+msgctxt "#31141"
+msgid "Passes your Real-Debrid key to the torrent scrapers (a4kScrapers Torrentio). Torrentio then lists only the releases it has seen cached ([RD+]), shown as verified. Releases it has not seen are not listed at all, which can remove most results for anime and new episodes."
+msgstr "Passes your Real-Debrid key to the torrent scrapers (a4kScrapers Torrentio). Torrentio then lists only the releases it has seen cached ([RD+]), shown as verified. Releases it has not seen are not listed at all, which can remove most results for anime and new episodes."

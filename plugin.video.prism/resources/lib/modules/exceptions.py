@@ -138,6 +138,23 @@ class ResolverFailure(StackTraceException):
         super().__init__(f"Failure to resolve source:\n{source}")
 
 
+class TorrentNotCached(ResolverFailure):
+    """
+    The debrid probe did not find the torrent ready to stream. The resolver skips the source
+    silently (no manual file selection prompt) and tries the next one.
+    ``persist`` is True only for an authoritative "not cached" answer from the debrid service,
+    which may be stored as a negative in the local debrid cache. Rate limits, service limits and
+    request errors set it to False: the hash state is unknown and must not be cached.
+    Does not log a stacktrace on creation (an uncached torrent is an expected outcome).
+    """
+
+    def __init__(self, info_hash, reason="not cached", persist=True):  # pylint: disable=super-init-not-called
+        Exception.__init__(self, f"{info_hash}: {reason}")
+        self.info_hash = info_hash
+        self.reason = reason
+        self.persist = persist
+
+
 class NoPlayableSourcesException(Exception):
     def __init__(self):
         g.log("No playable sources could be identified", "info")

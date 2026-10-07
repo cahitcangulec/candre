@@ -153,6 +153,93 @@
       "occurrences": 1,
       "last_seen": "2026-10-07T00:00:00.000Z",
       "status": "resolved 2026-10-06 23:59 UTC (5.0.58 live after a manual Pages build request); CI guard committed on master"
+    },
+    {
+      "id": "bug-009",
+      "timestamp": "2026-10-07T04:00:00.000Z",
+      "error_message": "5.0.58: about half of the Real-Debrid sources 'do not play' ('50/50'), while Seren 3.0.62 plays almost every click; an uncached source shows 'Failed to resolve a playable file, would you like to manually try select the file?' and answering Yes stops playback",
+      "file": "plugin.video.prism/resources/lib/modules/resolver/torrent_resolvers/real_debrid.py",
+      "files": [
+        "plugin.video.prism/resources/lib/modules/exceptions.py",
+        "plugin.video.prism/resources/lib/debrid/real_debrid.py",
+        "plugin.video.prism/resources/lib/modules/resolver/__init__.py",
+        "plugin.video.prism/resources/lib/modules/resolver/torrent_resolvers/real_debrid.py",
+        "plugin.video.prism/resources/lib/gui/windows/resolver_window.py"
+      ],
+      "root_cause": "_fetch_source_files returned [] for an uncached hash instead of raising (upstream Prism 3fbb730 / bbviking d444784 removed Seren 3.0.62's raise), so an uncached torrent looked like 'cached, no file matched': the 30490 prompt appeared after every uncached source (the resolver window always passed allow_manual_prompt=True), and Yes re-probed, raised NoFileSelectionAvailable and broke the loop. Same path: selectFiles on magnet_conversion (starts a download), delete before unrestrict with rd.autodelete, DELETE torrents/delete/None with autodelete off, a forced token refresh after any non-2xx, no cap.",
+      "fix": "5.0.59: TorrentNotCached(ResolverFailure, persist) raised by RealDebrid.check_hash and caught in resolve_single_source before ResolverFailure -> silent skip to the next source (Seren behaviour). check_hash deletes magnet_conversion/error torrents without selectFiles, re-checks once after 1.5 s, accepts only 'downloaded', keep_torrent=True keeps the torrent until the link is unrestricted. RD's answer is stored in debridCache under 'rd' ('True' 24 h / 'False' 4 h; 429/451/503/509 and request errors are not stored). Prompt 30490 only for a cached torrent without a file match, once per play attempt; at most 10 sources per click; token refresh only on 401; delete_torrent ignores an empty id. Harness 32/32 (HEAD 11/32).",
+      "tags": [
+        "real-debrid",
+        "resolver",
+        "fall-through",
+        "seren",
+        "dialog",
+        "autotrynext",
+        "rate-limit"
+      ],
+      "related_bugs": [
+        "bug-002",
+        "bug-010"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-10-07T04:00:00.000Z",
+      "status": "fixed in 5.0.59 (committed on master, not pushed); confirm in Kodi"
+    },
+    {
+      "id": "bug-010",
+      "timestamp": "2026-10-07T04:00:00.000Z",
+      "error_message": "5.0.58: DMM 'not available' hashes were stored as uncached for 4 h and hidden; a hard-coded third-party RD key was used for Torrentio without rd.auth; a url-only provider result (a4k torrentio with apikeys) raised KeyError and lost the provider's batch",
+      "file": "plugin.video.prism/resources/lib/modules/getSources.py",
+      "files": [
+        "plugin.video.prism/resources/lib/modules/getSources.py",
+        "plugin.video.prism/resources/lib/debrid/external_cache.py",
+        "plugin.video.prism/resources/lib/common/tools.py",
+        "plugin.video.prism/resources/settings.xml"
+      ],
+      "root_cause": "DMM is a crowd DB, so a miss there is no proof of 'uncached'; _realdebrid_worker persisted DMM negatives (checked_hashes=dmm_checked). _TIO_FALLBACK_PARAM was inherited from upstream. _process_torrent_source evaluated source['magnet'] eagerly in source.get('hash', findall(source['magnet'])[0]).",
+      "fix": "5.0.59: external answers only promote (only 'True' is persisted for RD; only the resolver's RD probe writes 'False'); the fallback key is gone and Torrentio/Comet/AIOStreams run only with the user's rd.auth; _torrent_source_hash takes hash/magnet/resolve URL and drops the key-bearing URL; opt-in rd.scraperCachedOnly passes apikeys to a4kScrapers; common.tools.log redacts debrid keys; one 'RD cache summary' info line per scrape. Harness 39/39, integration with the resolver's rows 5/5.",
+      "tags": [
+        "real-debrid",
+        "dmm",
+        "torrentio",
+        "cache-check",
+        "a4kscrapers",
+        "apikeys",
+        "secrets"
+      ],
+      "related_bugs": [
+        "bug-003",
+        "bug-009"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-10-07T04:00:00.000Z",
+      "status": "fixed in 5.0.59 (committed on master, not pushed); AllDebrid worker still hides DMM negatives (open item)"
+    },
+    {
+      "id": "bug-011",
+      "timestamp": "2026-10-07T04:00:00.000Z",
+      "error_message": "Review of the 5.0.59 working tree: RealDebrid.check_cache_batch (instantAvailability, RD error 37) and _get_url_no_refresh had no callers left; 'Resolver: none of the N tried sources' reported the capped list length even when the loop stopped early (user cancel)",
+      "file": "plugin.video.prism/resources/lib/debrid/real_debrid.py",
+      "files": [
+        "plugin.video.prism/resources/lib/debrid/real_debrid.py",
+        "plugin.video.prism/resources/lib/modules/resolver/__init__.py",
+        "plugin.video.prism/resources/lib/gui/windows/resolver_window.py"
+      ],
+      "root_cause": "Two agents changed the scrape side (removed the only caller) and the resolver side in parallel; the log line used min(len(sources), cap) / len(sources) instead of the number of sources actually tried.",
+      "fix": "Deleted check_cache_batch and _get_url_no_refresh; both log lines count the sources actually tried.",
+      "tags": [
+        "review",
+        "dead-code",
+        "logging",
+        "real-debrid"
+      ],
+      "related_bugs": [
+        "bug-009",
+        "bug-010"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-10-07T04:00:00.000Z",
+      "status": "fixed in 5.0.59"
     }
   ]
 }
