@@ -2,13 +2,29 @@
 
 > Single source of truth for resuming work. Read this FIRST when starting a session.
 > Update this file at the end of every work phase so the next `/clear` resumes in 1 read.
-> Last updated: 2026-10-07 (5.0.59 committed on master, not pushed: silent RD fall-through, promote-only cache hints)
+> Last updated: 2026-10-08 (5.0.59 published to gh-pages 53be482; repository.candre 1.0.1 committed on master, not pushed: checksum verify)
 
 ---
 
 ## ✅ Done
 
-- **2026-10-07 — plugin.video.prism 5.0.59: uncached RD sources fall through silently (committed on master, not pushed).**
+- **2026-10-08 — 5.0.59 published; Kodi still showed 5.0.58; repository.candre 1.0.1 committed on master, not pushed.**
+  - Timeline (UTC): master pushed `7dfb7c1` (5.0.59) at 19:21:53; CI run 37831410319 published gh-pages
+    `53be482` at 19:22:15. GitHub's automatic Pages build errored (superseded duplicate, "Page build failed.",
+    0 s); the build the workflow requested built the tip at 19:22:55. Served `addons.xml` (md5
+    `e624466f1306c2bd78a8ae7604c5c429`) lists 5.0.59 since 19:22:50. The zip is valid; its requires are
+    unchanged vs 5.0.58.
+  - The 5.0.58 zip is no longer on gh-pages (HTTP 404), so there is no rollback to 5.0.58 from Kodi.
+  - Kodi still showed 5.0.58 at ~19:31 UTC. Likely cause (not confirmed on the device): a refresh inside the CDN `max-age=600` window can fetch the
+    new `addons.xml.md5` with a cached old `addons.xml`. `repository.candre` 1.0.0 had no `checksum verify`,
+    so Kodi stored that pair and kept 5.0.58 until the md5 changes again or the repository add-on is
+    reinstalled. Prism's Provider Tools > Check For Updates checks provider packages only
+    (`install_manager.check_for_updates`), never `plugin.video.prism`, so its "no updates" message is
+    unrelated to the Kodi repository.
+  - Fix (committed on master, not pushed): repository.candre 1.0.1 with `<checksum verify="md5">` (a mismatch
+    now fails and retries; the md5 URL is unchanged). `publish-repo.yml`'s Pages step waits for the automatic
+    Pages build (see Release flow). Kodi refresh facts rewritten in "Kodi update rule". Bug log: bug-012.
+- **2026-10-07 — plugin.video.prism 5.0.59: uncached RD sources fall through silently (pushed 2026-10-08; published as gh-pages `53be482`).**
   User report after 5.0.58: RD torrents listed "Unverified" and only about half play ("50/50"), while
   Seren 3.0.62 plays almost every click. Write-up: `docs/rd-resolver-fallthrough.md`.
   - Root cause: `_fetch_source_files` returned `[]` for an uncached torrent (upstream `3fbb730` removed
@@ -92,13 +108,22 @@
 **Project:** candre = fork of Kodi addon Prism (upstream Goldenfreddy0703/Prism, a Seren fork),
 https://github.com/cahitcangulec/candre.
 - Branches: `master` = code, `gh-pages` = published Kodi repo (https://cahitcangulec.github.io/candre/).
-- Addons: `plugin.video.prism/` 5.0.59, `context.prism/` 4.0.2, `repository.candre/` 1.0.0. Python 3.
+- Addons: `plugin.video.prism/` 5.0.59 (published), `context.prism/` 4.0.2, `repository.candre/` 1.0.1
+  (committed on master, not pushed; 1.0.0 is published). Python 3.
 
-**Goal:** the user pushes master (`git push origin master`) so CI publishes 5.0.59 to gh-pages, then
-confirms 5.0.59 in Kodi. Then decide on the remaining open items.
+**Goal:** (1) the user pushes master (`git push origin master`): CI publishes repository.candre 1.0.1
+(checksum verify) and runs the new Pages wait (see Release flow). Check that the run is green, wait 10 min,
+then "Check for updates" in Kodi. (2) The user confirms 5.0.59 in Kodi (open item 1). Then decide on the
+remaining open items.
 
 ### Open items (code paths relative to `plugin.video.prism/resources/lib/`)
 1. **Confirm 5.0.59 in Kodi.** 5.0.58 was never confirmed on the device; 5.0.59 supersedes it.
+   - Published: gh-pages `53be482` (CI run 37831410319), served since 19:22:50 UTC on 2026-10-08. At ~19:31 UTC
+     Kodi still showed 5.0.58 (see Done, 2026-10-08).
+   - To do in Kodi: (a) Add-ons screen header button "Check for updates", at least 10 min after the latest
+     publish (the 19:22 UTC window closed at 19:32 UTC); (b) Prism info page > Versions: install the entry
+     "5.0.59 / Candre Repository" (keeps settings). If that entry is still missing after a check, the client
+     is stuck: see "Stuck client, fallback only" under "Kodi update rule".
    - Kodi only auto-updates Prism if its origin is "Candre Repository" (see "Kodi update rule").
    - After the update: `Clearing uncached debrid hashes on Prism version change` and
      `DebridCache: Cleared N uncached entries`.
@@ -124,14 +149,52 @@ confirms 5.0.59 in Kodi. Then decide on the remaining open items.
 4. **a4kScrapers Torrentio has no Kitsu support.** Anime without an IMDb id gets no Torrentio results,
    with or without `rd.scraperCachedOnly` (a4k raises TypeError on `None + ':'` and returns 0).
 
-### Kodi update rule (Kodi 19+, from Kodi source `xbmc/addons/AddonRepos.cpp`)
-- An addon auto-updates only from the repository it was installed from (its origin). A zip install
-  has origin "" ("Manual" on its info page) and is checked only against the official Kodi repo.
-- So the user's Prism needs Origin = "Candre Repository". One-time fix: Prism info page -> Versions
-  -> newest entry labelled "Candre Repository" (keeps settings), or Install from repository ->
-  Candre Repository -> Prism (answer No to removing settings).
-- Then the default "Install updates automatically" applies: checks at startup and every 24 h, or on
-  demand via Add-on browser -> Check for updates.
+### Kodi update rule (Kodi 19+, from the Kodi source, Nexus/Omega/master)
+- **Manual refresh:** the only trigger is the Add-ons screen header button "Check for updates" (add-on
+  browser). There is no Settings entry and no per-repository context action. It refreshes all repositories.
+- **What a refresh does:** for each repository Kodi fetches `addons.xml.md5` and compares it with the checksum
+  stored in the addons DB. Equal: "checksum not changed", nothing downloaded. Different: Kodi downloads
+  `addons.xml` and stores the new checksum.
+- **Without `verify`** (repository.candre 1.0.0): Kodi stores the NEW md5 together with WHATEVER `addons.xml`
+  it got. If the CDN served the new md5 with a stale `addons.xml`, the client stays on the old index until the
+  md5 changes again (next publish), or the repository add-on is uninstalled/reinstalled, or its installed
+  version changes.
+- **With `<checksum verify="md5">`** (repository.candre 1.0.1): a mismatch fails the refresh ("index has wrong
+  digest"), the stored checksum stays, and the next check retries cleanly.
+- **Local DB only:** the Versions dialog and repository browsing read only the local addons DB, so they show
+  nothing new until a refresh has stored it.
+- **Automatic checks:** setting Settings > System > Add-ons > General > Updates (id `general.addonupdates`):
+  "Install updates automatically" (default), "Notify, but don't install updates", "Never check for updates".
+  Automatic checks run at the stored next-check time (default 24 h after the last result; Omega enforces at
+  least 1 h between automatic runs). At startup Kodi checks only if that time has passed. It is NOT "at
+  startup and every 24 h".
+- **Origin:** an add-on auto-updates only from the repository it was installed from (its origin). A zip install
+  of a regular add-on (Prism) has origin "" ("Manually installed") and is checked only against the official Kodi
+  repo. A repository add-on uses its own id as origin, also when installed from a zip (`xbmc/addons/AddonInstaller.cpp`:
+  "use own id as origin if repository"), so repository.candre updates itself. The info page shows
+  no origin label; origin is visible only as the repository name under each entry in the Versions dialog
+  (e.g. "5.0.59 / Candre Repository").
+- **Switching origin** (no uninstall, settings kept): Prism info page > Versions > entry "5.0.59 / Candre
+  Repository" > Install. Or Install from repository > Candre Repository > Prism, and answer No when asked
+  about removing data.
+- **GitHub Pages CDN:** `addons.xml`, `addons.xml.md5` and the zips are served with `Cache-Control: max-age=600`,
+  and the CDN ignores query strings (`?v=` does not bust it). The two index files are separate CDN objects,
+  updated seconds apart. After a publish, wait 10 min before "Check for updates".
+- **1.0.0 clients update themselves to 1.0.1.** repository.candre 1.0.0 uses its own id as origin
+  (`repository.candre`), so it auto-updates to 1.0.1 at the next successful refresh when Settings > System >
+  Add-ons > General > Updates is "Install updates automatically" (the default). No manual zip install is needed.
+  The 1.0.1 publish changes addons.xml.md5, so every client, including one stuck on a mismatched md5/index pair,
+  downloads the full index again at its next check (a manual "Check for updates" at least 10 min after the
+  publish, or the scheduled check). After 1.0.1 is installed, the installed repository version differs from the
+  stored lastCheckedVersion, so the following check is a full fetch as well.
+- **Stuck client, fallback only** (a client whose refresh still fails after the 1.0.1 publish: "Check for updates"
+  changes nothing and the Versions dialog shows no new entry). Wait 10 min after the publish, then "Check for
+  updates". Only if it still fails, install the 1.0.1 zip over the existing repository:
+  1. Add-ons > Install from zip file > `repository.candre-1.0.1.zip` from https://cahitcangulec.github.io/candre/zips/repository.candre/
+     (Unknown sources must be on; download the zip in a browser first if Kodi cannot browse the URL).
+  2. "Check for updates" (not within 10 min of a publish).
+  Last resort: uninstall Candre Repository first (My add-ons > Add-on repository > Candre Repository > Uninstall,
+  answer No to removing data; this deletes its stored checksum row), then steps 1 and 2.
 
 ### Release flow (automatic since 2026-10-07)
 1. Bump the version in `plugin.video.prism/addon.xml` (or `context.prism/` / `repository.candre/`).
@@ -139,10 +202,13 @@ confirms 5.0.59 in Kodi. Then decide on the remaining open items.
 3. Commit on master and push master (`git push origin master`). Nothing else.
 4. CI (`.github/workflows/publish-repo.yml`) checks out gh-pages in a worktree and runs
    `tools/build_repo.py . <worktree> HEAD --reuse-zips <worktree>`. If the tree changed, CI commits
-   "Publish <addon> <version>" on gh-pages as github-actions[bot] and pushes it. If GitHub Pages
-   is not serving the gh-pages tip, CI requests a Pages build.
-5. Kodi installs with `repository.candre` see the new addons.xml.md5 and update by themselves, but
-   only for addons whose origin is "Candre Repository" (see "Kodi update rule").
+   "Publish <addon> <version>" on gh-pages as github-actions[bot] and pushes it. The Pages step then waits
+   for GitHub's automatic Pages build (polls `repos/.../pages/builds/latest`). It requests a build
+   (POST `pages/builds`) only if none comes within 180 s or the automatic one errored, and it fails the run
+   if the gh-pages tip is still not built after the wait. A red run means the site is stale: re-run it.
+5. Kodi clients pick up the new addons.xml.md5 at their next check (automatic at the stored next-check time,
+   or "Check for updates" at least 10 min after the publish) and update only addons whose origin is
+   "Candre Repository" (see "Kodi update rule"). repository.candre itself updates too (its origin is its own id).
 - Code pushed without a version bump is **not** published: the published zip for a version never
   changes, and the run shows a warning annotation. Bump the version to release.
 - Manual run: GitHub -> Actions -> "Publish Kodi repository" -> Run workflow (master only).
@@ -207,7 +273,11 @@ python tools/build_repo.py . ../candre-pages master --reuse-zips ../candre-pages
 git -C ../candre-pages add -A && git -C ../candre-pages commit -m "Publish ..."
 git push origin gh-pages
 openwolf scan && openwolf status                                             # refresh the project index
+gh run list -R cahitcangulec/candre --workflow publish-repo.yml --limit 3   # last Kodi publish runs; red = site may be stale
 ```
+
+`gh` defaults to the upstream repo (Goldenfreddy0703/Prism) in this checkout: always pass `-R cahitcangulec/candre`.
+`gh api` has no `-R`, so use the explicit `repos/cahitcangulec/candre/...` path there.
 
 ---
 

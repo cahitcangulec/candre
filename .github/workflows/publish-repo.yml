@@ -9,9 +9,10 @@
 #
 # GitHub Pages must stay configured as "Deploy from a branch: gh-pages / (root)" (Settings ->
 # Pages; it is, build_type "legacy"). A push to gh-pages, also one made with GITHUB_TOKEN, starts
-# GitHub's "pages build and deployment" run. The last step also requests a Pages build through the
-# API whenever the deployed commit is not the gh-pages tip, because the manual push of gh-pages
-# 3cc2944 on 2026-10-06 never started one.
+# GitHub's "pages build and deployment" run. The last step waits until the newest Pages build is
+# "built" for the gh-pages tip, so a green run means GitHub has built the tip. If the push started
+# no build (the manual push of gh-pages 3cc2944 on 2026-10-06 never did) or the build errored, the
+# step requests one build through the API and waits again. The run fails if the tip is still not built.
 #
 # Plain git instead of peaceiris/actions-gh-pages: the build needs the current gh-pages tree as
 # input (--reuse-zips keeps every already-published zip byte for byte; a rebuilt zip would get new
@@ -20,7 +21,8 @@
 # ends up exactly equal to the build output with no stale files. Plain git also gives the
 # no-change check and the commit message, without a third-party action holding a write token.
 #
-# Idempotent: a run whose build matches gh-pages commits nothing and succeeds.
+# Idempotent: a run whose build matches gh-pages commits nothing and succeeds; the Pages step
+# returns at once when the tip is already built.
 # Fallback without CI: the manual tools/build_repo.py flow in .wolf/STATUS.md.
 
 name: Publish Kodi repository
@@ -38,7 +40,7 @@ on:
 
 permissions:
   contents: write  # push to gh-pages
-  pages: write     # request a Pages build when the push did not start one
+  pages: write     # read the Pages build status; request one build only when needed
 
 concurrency:
   group: publish-gh-pages  # never two pushes to gh-pages at once; runs queue instead
@@ -53,7 +55,7 @@ jobs:
     # workflow_dispatch can be started on any branch; only master is published
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25  # the last step can wait up to about 15 min for GitHub's Pages build
     steps:
       - name: Check out master
         uses: actions/checkout@v7
@@ -104,15 +106,53 @@ jobs:
           git push origin gh-pages  # from the main checkout, where actions/checkout stored the token
 
       - name: Make sure GitHub Pages deploys the gh-pages tip
+        # The push above starts GitHub's own Pages build, which takes tens of seconds. Wait until the newest Pages
+        # build is "built" for the gh-pages tip. A build for the tip that is queued or building is waited
+        # for, never duplicated. Request one build only if the newest build is errored, or if the newest
+        # build is still not the tip's after 180 s; a build still in progress gets 300 s more first. Then
+        # wait up to 420 s for the requested build. The Pages API is polled, not the site: the Pages CDN
+        # ignores query strings and keeps copies for up to 600 s, so polling the files would read stale ones.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tip=$(git rev-parse gh-pages)
-          deployed=$(gh api "repos/$GITHUB_REPOSITORY/pages/builds/latest" --jq .commit 2>/dev/null || true)
-          if [ "$deployed" = "$tip" ]; then
-            echo "GitHub Pages already serves gh-pages $tip."
-            exit 0
+          last=unknown
+          # The newest Pages build as "<commit> <status>", or "unknown" when the API call fails.
+          newest() {
+            gh api "repos/$GITHUB_REPOSITORY/pages/builds/latest" \
+              --jq '(.commit // "-") + " " + (.status // "-")' 2>/dev/null || echo unknown
+          }
+          # Polls for up to $1 seconds. Returns 0 once the newest build is built for the tip, 1 when time
+          # is up, and 2 when it is errored for the tip and $2 is "stop". With $2 "go" an errored build is
+          # not final: right after a request the API can still show the previous one for a moment.
+          await_tip() {
+            local end=$((SECONDS + $1))
+            while :; do
+              last=$(newest)
+              case "$last" in
+                "$tip built") return 0 ;;
+                "$tip errored")
+                  if [ "$2" = stop ]; then return 2; fi ;;
+              esac
+              (( SECONDS < end )) || return 1
+              sleep 10
+            done
+          }
+          rc=0; await_tip 180 stop || rc=$?
+          if [ "$rc" -eq 1 ] && [ "${last%% *}" = "$tip" ]; then
+            # Queued or building for the tip: wait for it instead of requesting a second build.
+            echo "GitHub Pages is still building gh-pages $tip ($last); waiting up to 300 s more."
+            rc=0; await_tip 300 stop || rc=$?
           fi
-          echo "GitHub Pages serves ${deployed:-unknown}, gh-pages is $tip: requesting a Pages build."
-          gh api -X POST "repos/$GITHUB_REPOSITORY/pages/builds" \
+          if [ "$rc" -eq 0 ]; then echo "GitHub Pages built gh-pages $tip."; exit 0; fi
+          if [ "$rc" -eq 1 ] && [ "${last%% *}" = "$tip" ]; then
+            echo "::error::GitHub Pages has not built gh-pages $tip after 480 s (newest build: $last)."
+            exit 1
+          fi
+          echo "::warning::GitHub Pages has not built gh-pages $tip (exit $rc; newest build: $last); requesting a build."
+          gh api -X POST "repos/$GITHUB_REPOSITORY/pages/builds" >/dev/null \
             || echo "::warning::Could not request a GitHub Pages build; check Settings -> Pages and the 'pages build and deployment' runs."
+          rc=0; await_tip 420 go || rc=$?
+          if [ "$rc" -eq 0 ]; then echo "GitHub Pages built gh-pages $tip after the requested build."; exit 0; fi
+          echo "::error::GitHub Pages did not build gh-pages $tip (exit $rc; newest build: $last)."
+          exit 1

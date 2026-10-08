@@ -240,6 +240,32 @@
       "occurrences": 1,
       "last_seen": "2026-10-07T04:00:00.000Z",
       "status": "fixed in 5.0.59"
+    },
+    {
+      "id": "bug-012",
+      "timestamp": "2026-10-08T19:55:00Z",
+      "error_message": "Kodi still shows Prism 5.0.58 after 5.0.59 was published; Provider Tools > Check For Updates says no updates",
+      "file": "repository.candre/addon.xml, .github/workflows/publish-repo.yml",
+      "files": [
+        "repository.candre/addon.xml",
+        ".github/workflows/publish-repo.yml"
+      ],
+      "root_cause": "Likely causes, not confirmed on the device: (1) GitHub Pages serves with Cache-Control max-age=600, and addons.xml and addons.xml.md5 are separate CDN objects updated seconds apart: a check inside that window can fetch the new md5 with a cached old addons.xml. (2) repository.candre 1.0.0 had no <checksum verify=\"md5\">, so Kodi stored that mismatched pair and did not refresh until the md5 changed again or the repository add-on was reinstalled. (3) The CI Pages step raced GitHub's automatic Pages build (the automatic build errored as a superseded duplicate). Separately, Prism's Provider Tools > Check For Updates checks provider packages only (install_manager.check_for_updates), never plugin.video.prism, so its 'no updates' message says nothing about the Kodi repository.",
+      "fix": "repository.candre 1.0.0 -> 1.0.1 adds <checksum verify=\"md5\"> (a mismatched pair now fails the refresh and retries; the md5 URL is unchanged). publish-repo.yml's Pages step waits for GitHub's automatic Pages build (polls pages/builds/latest; requests a build only if none comes within 180 s or it errored; fails the run if the tip is not built). STATUS.md 'Kodi update rule' documents the real refresh semantics, the 10-min CDN wait and the stuck-client recovery. Committed on master, not pushed.",
+      "tags": [
+        "kodi",
+        "repository",
+        "github-pages",
+        "cdn",
+        "auto-update",
+        "ci"
+      ],
+      "related_bugs": [
+        "bug-008"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-10-08T19:55:00Z",
+      "status": "fixed on master (repository.candre 1.0.1 and the CI Pages wait), not pushed; confirm in Kodi"
     }
   ]
 }
