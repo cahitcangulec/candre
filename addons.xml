@@ -20,7 +20,7 @@
     </extension>
 </addon>
 
-<addon id="plugin.video.prism" version="5.0.58" name="Prism" provider-name="Nixgates">
+<addon id="plugin.video.prism" version="5.0.59" name="Prism" provider-name="Nixgates">
     <requires>
         <import addon="xbmc.addon" version="17.9.910" />
         <import addon="xbmc.python" version="3.0.0" />
